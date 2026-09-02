@@ -80,6 +80,10 @@ uv sync --extra dev
 cp .env.example .env      # optional, the defaults work as is
 ```
 
+`uv.lock` is committed, so `uv sync` installs the exact versions this was built
+and tested against. That matters here more than usual: the Temporal LangGraph
+plugin is in Public Preview and its API can move between releases.
+
 Everything below has a wrapper in `scripts/` that handles the `uv run`
 invocation for you, works from any directory, and passes extra arguments
 through. Use those, or use the underlying `uv run ...` command; both are shown.
