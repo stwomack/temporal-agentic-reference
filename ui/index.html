@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Durable PO approval demo</title>
+<link rel="stylesheet" href="/ui/app.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>Durable purchase order approval</h1>
+    <p class="sub">Temporal orchestration, LangGraph extraction agent, Amazon Bedrock</p>
+  </div>
+  <div class="env" id="env">
+    <span class="pill" id="pill-temporal">temporal: connecting</span>
+    <span class="pill" id="pill-model">model: loading</span>
+    <a class="pill link" id="link-temporal-ui" href="http://localhost:8233" target="_blank" rel="noreferrer">open Temporal Web UI</a>
+  </div>
+</header>
+
+<main>
+  <section class="col main-col">
+    <div class="card">
+      <h2>Scenarios</h2>
+      <p class="hint">Each scenario runs the same workflow. The extraction step is a live Bedrock call every time.</p>
+      <div class="scenarios" id="scenarios"></div>
+      <div class="runbar">
+        <span id="run-label" class="run-label">No run yet</span>
+        <a id="run-link" class="pill link" href="#" target="_blank" rel="noreferrer" hidden>view in Temporal</a>
+      </div>
+      <div class="banner error" id="error-banner" hidden></div>
+    </div>
+
+    <div class="card">
+      <h2>Workflow</h2>
+      <div class="diagram" id="diagram"></div>
+      <div class="legend">
+        <span><i class="dot pending"></i>pending</span>
+        <span><i class="dot running"></i>running</span>
+        <span><i class="dot waiting"></i>waiting on human</span>
+        <span><i class="dot completed"></i>completed</span>
+        <span><i class="dot skipped"></i>skipped</span>
+        <span><i class="dot failed"></i>failed</span>
+      </div>
+      <div class="outcome" id="outcome" hidden></div>
+    </div>
+
+    <div class="card approval" id="approval" hidden>
+      <h2>Human approval required</h2>
+      <p id="approval-reason" class="approval-reason"></p>
+      <label for="approval-comment">Comment (optional)</label>
+      <input id="approval-comment" type="text" placeholder="Reason for the decision" />
+      <div class="actions">
+        <button class="btn approve" id="btn-approve">Approve</button>
+        <button class="btn reject" id="btn-reject">Reject</button>
+      </div>
+      <p class="hint">Delivered as a Temporal Update. The workflow is parked on wait_condition, not polling.</p>
+    </div>
+
+    <div class="card">
+      <h2>Extracted purchase order</h2>
+      <div id="extracted" class="extracted empty">Nothing extracted yet.</div>
+    </div>
+
+    <div class="card">
+      <h2>Telemetry</h2>
+      <table class="feed" id="feed">
+        <thead>
+          <tr><th>Step</th><th>Status</th><th>Latency</th><th>Timestamp</th><th>Detail</th></tr>
+        </thead>
+        <tbody><tr class="empty-row"><td colspan="5">No events yet.</td></tr></tbody>
+      </table>
+      <div class="pending" id="pending" hidden></div>
+    </div>
+  </section>
+
+  <aside class="col code-col">
+    <div class="card code-card">
+      <h2>Code in flight</h2>
+      <div class="code-meta" id="code-meta">Start a scenario to follow the executing code.</div>
+      <pre class="code" id="code"><code></code></pre>
+    </div>
+  </aside>
+</main>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>
