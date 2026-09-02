@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import sys
 
 from common.preflight import require_dependencies
 
@@ -23,7 +24,12 @@ from temporalio.worker import Worker  # noqa: E402
 from activities.erp import submit_to_erp  # noqa: E402
 from activities.guardrail import check_guardrails  # noqa: E402
 from common.config import get_settings  # noqa: E402
-from common.temporal_client import build_workflow_runner, connect  # noqa: E402
+from common.temporal_client import (  # noqa: E402
+    TemporalConnectionError,
+    build_workflow_runner,
+    connect,
+    describe_target,
+)
 from workflows.po_approval import POApprovalWorkflow  # noqa: E402
 
 logger = logging.getLogger("worker")
@@ -35,12 +41,17 @@ async def main() -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
     settings = get_settings()
-    client = await connect()
+    try:
+        client = await connect()
+    except TemporalConnectionError as exc:
+        # A connection problem is the operator's to fix, so print the advice
+        # rather than burying it under a bridge level traceback.
+        print(f"FAIL: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
     logger.info(
-        "worker starting: address=%s namespace=%s task_queue=%s bedrock_model=%s",
-        settings.temporal_address,
-        settings.temporal_namespace,
+        "worker starting: %s task_queue=%s bedrock_model=%s",
+        describe_target(settings),
         settings.temporal_task_queue,
         settings.bedrock_model_id,
     )

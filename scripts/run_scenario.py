@@ -29,7 +29,7 @@ from common.models import (  # noqa: E402
     WorkflowState,
 )
 from common.scenarios import SCENARIOS  # noqa: E402
-from common.temporal_client import connect  # noqa: E402
+from common.temporal_client import TemporalConnectionError, connect  # noqa: E402
 from workflows.po_approval import POApprovalWorkflow  # noqa: E402
 
 
@@ -51,7 +51,11 @@ async def main() -> int:
         decision = "reject" if spec.scenario is Scenario.HUMAN_REJECTION else "approve"
 
     po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
-    client = await connect()
+    try:
+        client = await connect()
+    except TemporalConnectionError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
     handle = await client.start_workflow(
         POApprovalWorkflow.run,
         POWorkflowInput(

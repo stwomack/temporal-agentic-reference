@@ -71,8 +71,13 @@ async function loadStatic() {
       getJSON("/api/steps"),
       getJSON("/api/scenarios"),
     ]);
-    el("pill-temporal").textContent = `temporal: ${health.temporal_address} / ${health.task_queue}`;
+    el("pill-temporal").textContent =
+      `temporal: ${health.temporal_address} / ${health.temporal_namespace}` +
+      (health.temporal_tls ? " (tls)" : "");
     el("pill-model").textContent = `bedrock: ${health.bedrock_model_id}`;
+    if (health.temporal_ui_url) {
+      el("link-temporal-ui").href = health.temporal_ui_url;
+    }
     state.steps = steps;
     state.scenarios = scenarios;
     renderScenarios();

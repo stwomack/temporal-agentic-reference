@@ -99,11 +99,43 @@ model specific. Once the form is approved, switch with one variable:
 BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
 ```
 
+## Pointing at Temporal Cloud instead
+
+The demo runs against either a local dev server or Temporal Cloud, decided
+entirely by environment variables. The variable names are the ones the Temporal
+CLI uses, so a `.env` that already works with the CLI works here unchanged.
+
+For Cloud, set the gRPC endpoint and the fully qualified namespace, then pick
+one auth method:
+
+```bash
+TEMPORAL_ADDRESS=your-namespace.acct.tmprl.cloud:7233
+TEMPORAL_NAMESPACE=your-namespace.acct
+
+# either an API key
+TEMPORAL_API_KEY=...
+
+# or an mTLS client certificate pair
+TEMPORAL_TLS_CLIENT_CERT_PATH=/path/to/client.pem
+TEMPORAL_TLS_CLIENT_KEY_PATH=/path/to/client.key
+```
+
+TLS is turned on automatically for any `*.tmprl.cloud` address, and whenever
+either credential is set. `TEMPORAL_TLS=true` or `false` forces it. The
+"view in Temporal" links switch to https://cloud.temporal.io on their own.
+
+Skip step 1 below when using Cloud; the worker and the API are the same.
+
+If the address points at a TLS endpoint but TLS is off, the SDK fails with
+`transport error ... broken pipe` from `get_system_info`, which says nothing
+useful. The connection code detects that case and prints what to set instead.
+
 ## Running it
 
 Three processes, each in its own terminal.
 
-**1. The Temporal server.** A local development server, in memory:
+**1. The Temporal server.** Skip this if you are using Temporal Cloud. For a
+local demo, a development server, in memory:
 
 ```bash
 temporal server start-dev
@@ -184,11 +216,13 @@ would otherwise break silently after a rename.
 The UI is not required. To run a scenario without a browser:
 
 ```bash
-uv run python scripts/run_scenario.py happy_path
-uv run python scripts/run_scenario.py human_approval --decision approve
-uv run python scripts/run_scenario.py human_rejection --decision reject
-uv run python scripts/run_scenario.py erp_retry
+./scripts/run_scenario.sh happy_path
+./scripts/run_scenario.sh human_approval --decision approve
+./scripts/run_scenario.sh human_rejection --decision reject
+./scripts/run_scenario.sh erp_retry
 ```
+
+That wrapper is `uv run python scripts/run_scenario.py`, which works too.
 
 The workflow also accepts a Signal named `decide`, in addition to the
 `submit_decision` Update, so you can drive the approval step with the Temporal

@@ -41,7 +41,7 @@ from common.models import (
     StatusResponse,
 )
 from common.scenarios import SCENARIOS
-from common.temporal_client import connect
+from common.temporal_client import TemporalConnectionError, connect, describe_target
 from workflows.po_approval import POApprovalWorkflow
 
 logger = logging.getLogger(__name__)
@@ -66,16 +66,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     try:
         _client = await connect()
-    except Exception as exc:  # noqa: BLE001
-        # A dead Temporal is the single most common local failure. Say so once,
-        # loudly, at startup rather than on every request.
-        raise RuntimeError(
-            f"Cannot reach Temporal at {settings.temporal_address}. Start it "
-            f"with 'temporal server start-dev'. Original error: {exc}"
-        ) from exc
+    except TemporalConnectionError as exc:
+        # A dead or misconfigured Temporal is the most common startup failure.
+        # Say so once, loudly, with the advice attached, rather than failing
+        # every request later.
+        raise RuntimeError(str(exc)) from None
     logger.info(
-        "API ready: temporal=%s task_queue=%s bedrock_model=%s",
-        settings.temporal_address,
+        "API ready: %s task_queue=%s bedrock_model=%s",
+        describe_target(settings),
         settings.temporal_task_queue,
         settings.bedrock_model_id,
     )
@@ -97,9 +95,12 @@ def handle(workflow_id: str) -> WorkflowHandle:
 
 
 def _temporal_ui_url(workflow_id: str) -> str:
+    """Deep link to this execution, on the local web UI or on Temporal Cloud."""
     settings = get_settings()
-    host = settings.temporal_address.split(":")[0]
-    return f"http://{host}:8233/namespaces/{settings.temporal_namespace}/workflows/{workflow_id}"
+    return (
+        f"{settings.temporal_ui_base_url}/namespaces/"
+        f"{settings.temporal_namespace}/workflows/{workflow_id}"
+    )
 
 
 def _failure_chain(exc: BaseException) -> str:
@@ -202,6 +203,8 @@ async def health() -> dict[str, Any]:
     return {
         "temporal_address": settings.temporal_address,
         "temporal_namespace": settings.temporal_namespace,
+        "temporal_ui_url": settings.temporal_ui_base_url,
+        "temporal_tls": settings.tls_enabled,
         "task_queue": settings.temporal_task_queue,
         "bedrock_region": settings.bedrock_region,
         "bedrock_model_id": settings.bedrock_model_id,
