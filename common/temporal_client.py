@@ -23,9 +23,21 @@ from temporalio.worker.workflow_sandbox import (
     SandboxRestrictions,
 )
 
+from agents import (
+    duplicate_detection,
+    policy_compliance,
+    supervisor,
+    vendor_risk,
+)
 from agents.extraction_graph import build_extraction_graph
 from common.config import Settings, get_settings
-from common.constants import EXTRACTION_GRAPH_NAME
+from common.constants import (
+    DUPLICATE_GRAPH_NAME,
+    EXTRACTION_GRAPH_NAME,
+    POLICY_GRAPH_NAME,
+    SUPERVISOR_GRAPH_NAME,
+    VENDOR_RISK_GRAPH_NAME,
+)
 
 
 class TemporalConnectionError(RuntimeError):
@@ -35,10 +47,24 @@ class TemporalConnectionError(RuntimeError):
 def build_langgraph_plugin() -> LangGraphPlugin:
     """The LangGraph plugin, in Public Preview in the Temporal Python SDK.
 
-    It registers the extraction graph and turns every node marked
-    execute_in="activity" into a Temporal Activity.
+    Registers all five agents. Every node marked execute_in="activity" becomes
+    a Temporal Activity, so each model turn and each tool call is separately
+    retried, timed, and recorded in workflow history.
+
+    Each agent is its own graph rather than one big graph, because the
+    orchestrator workflow is what fans them out. That keeps Temporal as the
+    multi-agent orchestrator: the concurrency, the retries, and the durability
+    of partial results are all Temporal's, not LangGraph's.
     """
-    return LangGraphPlugin(graphs={EXTRACTION_GRAPH_NAME: build_extraction_graph()})
+    return LangGraphPlugin(
+        graphs={
+            EXTRACTION_GRAPH_NAME: build_extraction_graph(),
+            VENDOR_RISK_GRAPH_NAME: vendor_risk.build_graph(),
+            POLICY_GRAPH_NAME: policy_compliance.build_graph(),
+            DUPLICATE_GRAPH_NAME: duplicate_detection.build_graph(),
+            SUPERVISOR_GRAPH_NAME: supervisor.build_graph(),
+        }
+    )
 
 
 def _read_credential(path_value: str, label: str) -> bytes:

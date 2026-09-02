@@ -1,0 +1,68 @@
+{
+  "Northwind Packaging Co.": {
+    "status": "approved",
+    "contract_on_file": true,
+    "tax_id_verified": true,
+    "years_active": 9,
+    "categories": ["packaging", "corrugate"],
+    "annual_spend_usd": 2450000,
+    "incidents": [
+      {"date": "2025-03-14", "severity": "low", "summary": "Two late deliveries during a carrier strike. Resolved."}
+    ]
+  },
+  "Continental Filling Systems": {
+    "status": "approved",
+    "contract_on_file": true,
+    "tax_id_verified": true,
+    "years_active": 14,
+    "categories": ["capital equipment", "line maintenance"],
+    "annual_spend_usd": 8900000,
+    "incidents": []
+  },
+  "Halden Industrial Supply": {
+    "status": "approved",
+    "contract_on_file": true,
+    "tax_id_verified": true,
+    "years_active": 6,
+    "categories": ["MRO", "lubricants", "conveyor parts"],
+    "annual_spend_usd": 610000,
+    "incidents": [
+      {"date": "2026-01-22", "severity": "low", "summary": "Invoice mismatch on a single line item. Credited."}
+    ]
+  },
+  "Acme Shell Corp": {
+    "status": "unapproved",
+    "contract_on_file": false,
+    "tax_id_verified": false,
+    "years_active": 0,
+    "categories": ["freight brokerage"],
+    "annual_spend_usd": 0,
+    "incidents": [
+      {"date": "2026-06-02", "severity": "high", "summary": "Registered address matches a mail forwarding service. Flagged by procurement integrity review."},
+      {"date": "2026-07-19", "severity": "high", "summary": "No verifiable tax identification. Two prior POs cancelled before payment."}
+    ]
+  },
+  "Unverified Holdings LLC": {
+    "status": "unapproved",
+    "contract_on_file": false,
+    "tax_id_verified": false,
+    "years_active": 0,
+    "categories": ["consulting"],
+    "annual_spend_usd": 0,
+    "incidents": [
+      {"date": "2026-05-30", "severity": "high", "summary": "Created 11 days before first quote submission. Beneficial ownership undisclosed."}
+    ]
+  },
+  "Pinnacle Cold Chain Ltd": {
+    "status": "probationary",
+    "contract_on_file": true,
+    "tax_id_verified": true,
+    "years_active": 1,
+    "categories": ["refrigerated logistics"],
+    "annual_spend_usd": 84000,
+    "incidents": [
+      {"date": "2026-04-11", "severity": "medium", "summary": "Temperature excursion on one refrigerated load. Corrective action plan accepted, vendor on probation until 2026-10-01."},
+      {"date": "2026-06-27", "severity": "medium", "summary": "Late submission of cold chain audit documentation."}
+    ]
+  }
+}

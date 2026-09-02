@@ -1,26 +1,68 @@
 # Durable multi-agent purchase order approval
 
-A demo of a purchase order approval process that survives failures, pauses for
-a human, and enforces spend policy. Temporal orchestrates the process. A
-LangGraph agent backed by Amazon Bedrock reads the purchase order. Everything
-is triggerable from a browser page, with no terminal needed once the two
-processes are running.
+Five Bedrock-backed agents reviewing a purchase order, orchestrated by Temporal,
+with a deterministic guardrail and a human in the loop. Everything is
+triggerable from a browser page.
 
-The pipeline has four steps:
+Temporal is the multi-agent orchestrator here. The fan out, the retries, the
+per-agent timeouts, and the durability of partial results all belong to
+Temporal rather than to an agent framework.
 
-1. **Extraction agent.** A LangGraph graph whose model node runs as a Temporal
-   Activity through the Temporal LangGraph plugin. It calls Amazon Bedrock via
-   `ChatBedrockConverse` and returns structured fields: vendor, requester,
-   currency, total, and line items. This call is live on every single run.
-2. **Policy guardrail.** A deterministic, rule based Activity. Under the
-   threshold it passes, over the threshold it asks for a human, and for a
-   blocked vendor or an amount over the hard cap it rejects outright.
-3. **Human approval.** Only when the guardrail asks for it. The workflow parks
-   on `workflow.wait_condition` and is woken by a Temporal Update. There is no
-   polling anywhere in the approval path.
-4. **ERP submission.** A simulated submission with a configurable seeded
-   failure count. Retries are handled entirely by Temporal's RetryPolicy. The
-   Activity contains no retry code of its own.
+```
+                    Extraction agent
+                           |
+        +------------------+------------------+     concurrent, one workflow task
+        |                  |                  |
+   Vendor risk       Policy compliance   Duplicate detection
+   (tool loop)                            (tool loop)
+        |                  |                  |
+        +------------------+------------------+
+                           |
+                   Supervisor agent
+              auto approve / escalate / reject
+                           |
+          Deterministic guardrail  ->  Human  ->  ERP
+```
+
+**The five agents.** Each is its own LangGraph graph with its own model,
+timeout, and retry policy, and each runs as its own Temporal activity.
+
+1. **Extraction agent** reads the free-form request into structured fields:
+   vendor, requester, currency, total, line items.
+2. **Vendor risk agent** runs a tool loop over the vendor registry. It looks the
+   vendor up, pulls the incident history when the registry gives it a reason
+   to, and rates the risk from low to critical.
+3. **Policy compliance agent** reads the written procurement policy in
+   `data/procurement_policy.md` and cites the clauses a request violates. This
+   is the prose half of policy, the half a numeric rule cannot express.
+4. **Duplicate detection agent** runs a tool loop over the purchase order
+   history, looking for a re-submitted order or a purchase split across several
+   orders to duck an approval threshold.
+5. **Supervisor agent** reads all three findings and routes the request: auto
+   approve, escalate to a human, or reject.
+
+**The guardrail outranks the agents.** After the supervisor decides, a
+deterministic, rule-based check runs on spending thresholds and blocked
+vendors. It has the final say, so an agent cannot talk a hard block into an
+approval. The agents add judgment on top of rules they cannot weaken.
+
+**Then the usual pipeline.** Human approval when the supervisor escalates or
+the threshold demands it, delivered as a Temporal Update with no polling, and a
+simulated ERP submission whose retries are Temporal's.
+
+## What this demonstrates that a script cannot
+
+- **The fan out is real.** The three specialists dispatch from a single
+  workflow task. Workflow history shows three activities in flight at once.
+- **Partial work survives a crash.** Kill the worker mid fan out and the
+  specialists that already finished are not re-run. Their Bedrock calls are not
+  paid for twice. `./scripts/crash_demo.sh` proves this by running the same
+  request twice, once normally and once with a `SIGKILL`, and comparing the
+  activity execution counts.
+- **Every agent turn is independently retried.** A model call that throttles
+  retries on its own policy without disturbing the other agents.
+- **Agents and rules are layered, not mixed.** The escalation scenario is under
+  the spending threshold, so the rule passes it, and the agents stop it anyway.
 
 ## What you need
 
@@ -38,10 +80,13 @@ uv sync --extra dev
 cp .env.example .env      # optional, the defaults work as is
 ```
 
-Run every command in this README through `uv run`. That is what puts the
-project's virtual environment on the path. A bare `python scripts/...` uses
-your system interpreter, which does not have the dependencies; the scripts
-detect that and tell you, but it is easier to just prefix with `uv run`.
+Everything below has a wrapper in `scripts/` that handles the `uv run`
+invocation for you, works from any directory, and passes extra arguments
+through. Use those, or use the underlying `uv run ...` command; both are shown.
+
+What matters is that the project's virtual environment is on the path. A bare
+`python scripts/...` uses your system interpreter, which does not have the
+dependencies. The scripts detect that and tell you what to run instead.
 
 Confirm Bedrock is reachable before anything else. This performs a real model
 invocation and prints a specific reason if it cannot:
@@ -147,38 +192,57 @@ That gives you the Temporal Web UI at http://localhost:8233. Leave it running.
 activity code. Temporal never runs your code itself; it hands work to workers.
 
 ```bash
-uv run python worker.py
+./scripts/worker.sh          # or: uv run python worker.py
 ```
+
+It logs the address, namespace, whether TLS is on, which auth method is in use,
+the task queue, and the Bedrock model, so you can confirm where it connected.
 
 **3. The API and UI.**
 
 ```bash
-uv run uvicorn api.main:app --reload
+./scripts/api.sh             # or: uv run uvicorn api.main:app --reload
 ```
 
-Open http://127.0.0.1:8000. The header shows which Temporal server and which
+Open http://127.0.0.1:8000. The header shows which Temporal namespace and which
 Bedrock model are in use, so you can tell at a glance that you are pointed
 where you think you are.
 
-## The five scenarios
+The wrapper reads `API_HOST` and `API_PORT` through the project's settings, so
+setting them in `.env` moves the server. Extra flags pass through to uvicorn,
+and because uvicorn lets the later flag win, `./scripts/api.sh --port 9000`
+overrides the configured port for one run.
 
-Each button on the page starts a fresh workflow. All five run the same workflow
-code and all five make a live Bedrock call. Only the policy thresholds and the
-seeded ERP failure count differ.
+## The seven scenarios
+
+Each button on the page starts a fresh workflow. All seven run the same workflow
+code and all seven make live Bedrock calls through all five agents. Only the
+request text, the policy thresholds, and the seeded ERP failure count differ.
 
 | Scenario | What it shows | Ends as |
 |---|---|---|
-| Happy path | A routine order under the threshold. Extract, check, submit. | `submitted` |
-| Guardrail violation | A blocked vendor. Rejected by policy with no human path, and the ERP step never runs. | `rejected_by_policy` |
-| Human in the loop: approve | A capital order over the threshold. The workflow pauses, you approve, it submits. | `submitted` |
-| Human in the loop: reject | The same pause, but you reject. A distinct end state, and ERP is never called. | `rejected_by_human` |
+| Happy path | Every agent clean, supervisor auto approves, straight to ERP. | `submitted` |
+| Guardrail violation | An unapproved vendor. The vendor risk agent rates it critical and the supervisor rejects, then the deterministic guardrail blocks it independently. Two layers, same answer. | `rejected_by_policy` |
+| Human in the loop: approve | Over the threshold. The workflow pauses, you approve, it submits. | `submitted` |
+| Human in the loop: reject | The same pause, but you reject. ERP is never called. | `rejected_by_human` |
+| Agent judgment escalation | Under the threshold, so the rule passes it. The agents find a probationary vendor with open cold chain findings and escalate anyway. | `submitted` after your approval |
+| Duplicate catch | A re-submission of an order placed nine days ago, reworded, with a slightly different total. No rule catches this. The duplicate detection agent reads the history and does. | `submitted` after your approval |
 | Failure and retry | The ERP gateway fails twice. Temporal retries with backoff and the third attempt succeeds. | `submitted` |
+
+The two worth spending time on with an audience are **Agent judgment
+escalation**, because the deterministic guardrail visibly says "no approval
+needed" while the agents stop the request anyway, and **Duplicate catch**,
+because it is the case where a rule cannot substitute for reading.
 
 What to watch, in order:
 
 - **The diagram** highlights the running step and fills in the latency of each
-  finished step. It updates on its own, over a server sent event stream. You
-  never need to refresh.
+  finished step. The three specialists sit inside a dashed box marked
+  "concurrent" and light up together. It updates on its own, over a server sent
+  event stream. You never need to refresh.
+- **The agent findings panel** fills in as each agent reports, with its
+  severity, its reasoning, and the model, turn count, tools called, and tokens
+  for that specific agent.
 - **The extracted purchase order** panel shows the fields the model pulled out,
   along with the model id and the token counts for that specific call. Those
   counts are the proof the call was live.
@@ -205,11 +269,57 @@ that implements the currently executing step, with the function body
 highlighted and scrolled into view, and it follows the workflow from step to
 step with no manual refresh.
 
+For the four specialist agents the panel shows the agent's system prompt, not
+its plumbing, because the prompt is what actually distinguishes one agent from
+another. For the deterministic steps it shows the function.
+
 The line numbers are not hardcoded. The API parses the module with Python's
-`ast` at request time and finds the function by name, so the panel keeps
-pointing at the right code after the files are edited. A test asserts that
-every step in the diagram still resolves to a real function, which is what
-would otherwise break silently after a rename.
+`ast` at request time and finds the symbol by name, resolving a function, a
+class, or a module level constant, so the panel keeps pointing at the right
+code after the files are edited. A test asserts that every step in the diagram
+still resolves to a real symbol, which is what would otherwise break silently
+after a rename.
+
+## The durability demo
+
+This is the part worth showing to anyone who thinks a Python script would do.
+
+Run it with no worker of your own running:
+
+```bash
+./scripts/cleanup.sh --all     # stop any worker first
+./scripts/crash_demo.sh
+```
+
+The script starts and kills its own worker. A second worker on the same task
+queue would pick the work up the instant the first one dies, so the fan out
+would never actually be interrupted and the comparison at the end would print
+"same" for everything while proving nothing. The script checks for other
+pollers and refuses to run rather than hand you that misleading result. Pass
+`--force` to override, and note that Temporal lists a poller for about a minute
+after its worker stops, so wait a moment if you just stopped one.
+
+It runs the same request twice. The first pass is a normal run and becomes the
+baseline. The second pass waits until the fan out is genuinely partial, with at
+least one specialist finished and at least one still running, then sends
+`SIGKILL` to the worker, restarts it, and lets the workflow finish. Then it
+prints the activity execution counts side by side.
+
+Because every activity execution appends an `ActivityTaskScheduled` event, and
+replay does not append new ones, those counts are the true number of times each
+activity body ran. Matching counts mean nothing was recomputed:
+
+```
+  activity                            normal  crashed
+  duplicate-detection.call_model           2        2   same
+  policy-compliance.call_model             1        1   same
+  vendor-risk.call_model                   3        3   same
+  ...
+```
+
+Any agent that was mid-call when the process died may show one extra execution.
+That is the honest and expected result: Temporal retried the work that was
+genuinely in flight and nothing else.
 
 ## Driving it from the command line instead
 
@@ -233,6 +343,45 @@ temporal workflow signal --workflow-id po-PO-XXXXXXXX --name decide \
   --input '{"approved": true, "decided_by": "cli", "comment": "ok"}'
 ```
 
+## The wrapper scripts
+
+Each one changes to the repo root first, so it works from any directory, passes
+its arguments through, and `exec`s the real command so exit codes propagate.
+
+| Script | Wraps |
+|---|---|
+| `scripts/check_bedrock.sh` | `uv run python scripts/check_bedrock.py` |
+| `scripts/worker.sh` | `uv run python worker.py` |
+| `scripts/api.sh` | `uv run uvicorn api.main:app --reload`, with the host and port from `API_HOST` and `API_PORT` |
+| `scripts/run_scenario.sh` | `uv run python scripts/run_scenario.py` |
+| `scripts/crash_demo.sh` | `uv run python -u scripts/crash_demo.py`, the durability demo |
+| `scripts/cleanup.sh` | stops this repo's worker and API processes, see below |
+
+## Stopping things
+
+`Ctrl+C` in each terminal is the normal way. `scripts/cleanup.sh` is for when
+something is left running in the background and you cannot find it, usually
+showing up as `[Errno 48] Address already in use` on the next start.
+
+```bash
+./scripts/cleanup.sh              # stop orphaned worker and API processes
+./scripts/cleanup.sh --dry-run    # list what it would stop, kill nothing
+./scripts/cleanup.sh --all        # also stop ones you started in a terminal
+```
+
+By default it only stops orphans: processes reparented to PID 1 with no
+controlling terminal, which is what a background process looks like once its
+shell is gone. A worker you started yourself is left alone, and the script says
+so, unless you pass `--all`.
+
+It is scoped to this checkout. A candidate has to have its working directory
+set to this repo root, so a `worker.py` belonging to some other project on the
+same machine is never a target. It stops the whole process tree, including the
+uvicorn reload supervisor's children, and escalates from `SIGTERM` to
+`SIGKILL` only if something refuses to exit.
+
+**It never touches the Temporal server.** Start and stop that yourself.
+
 ## Configuration
 
 Everything tunable is an environment variable, documented in `.env.example`:
@@ -245,6 +394,36 @@ approval deadline, are read once when a workflow starts and carried in its
 input rather than read inside the workflow. That keeps history replay
 deterministic even if a worker restarts with different variables set.
 
+## The data the agents read
+
+Three small files under `data/` stand in for systems that would live in an ERP:
+
+- `vendors.json` is the vendor master: approval status, contract and tax id on
+  file, years active, and an incident history.
+- `po_history.json` is the recent purchase order history the duplicate
+  detection agent searches.
+- `procurement_policy.md` is the written policy the compliance agent reads.
+
+Edit any of them and the agents' behavior changes on the next run with no code
+change. Adding a high severity incident to an approved vendor, or a new clause
+to the policy, is the quickest way to show an audience that the agents are
+genuinely reading rather than pattern matching on the request text.
+
+## Running each agent on a different model
+
+Every agent falls back to `BEDROCK_MODEL_ID`, and each can be overridden:
+
+```bash
+BEDROCK_MODEL_EXTRACTION=us.amazon.nova-lite-v1:0
+BEDROCK_MODEL_VENDOR_RISK=us.amazon.nova-pro-v1:0
+BEDROCK_MODEL_POLICY=us.amazon.nova-pro-v1:0
+BEDROCK_MODEL_DUPLICATE=us.amazon.nova-lite-v1:0
+BEDROCK_MODEL_SUPERVISOR=us.amazon.nova-pro-v1:0
+```
+
+The findings panel shows which model answered for each agent, so a mixed
+configuration is visible in the UI rather than buried in config.
+
 ## Tests
 
 ```bash
@@ -252,9 +431,15 @@ uv run pytest
 ```
 
 The suite covers the guardrail policy boundaries, the ERP activity's behavior
-at each Temporal attempt number, the code panel's source resolution, the
-deterministic normalization step, live Bedrock extraction, and all five
+at each Temporal attempt number, the agent tools, every agent's finding
+mapping, the loop safeguards that force an agent to conclude, the code panel's
+source resolution, live Bedrock extraction and live agent tool loops, and the
 scenarios end to end against a real Temporal server.
+
+Three of those e2e tests assert the claims this demo makes out loud rather than
+taking them on trust: that the fan out finishes in well under the combined time
+of its three agents, that the deterministic guardrail outranks the supervisor,
+and that the agents escalate a request the threshold alone would have passed.
 
 Tests that need Bedrock or a Temporal server are skipped, with the reason
 printed, when those are not available. They are never backed by a fake model
@@ -267,19 +452,44 @@ passing test suite that stubbed it out would be worse than a skipped one.
   API holds no state, the browser holds no model of the pipeline, and so the
   diagram, the telemetry feed, and the code panel cannot drift from what the
   workflow actually did.
-- The extraction agent is the only probabilistic component. Policy enforcement
-  is deliberately rule based so it is auditable and gives the same answer every
-  time.
+- The agents are the probabilistic components and are kept separable from the
+  rules. The deterministic guardrail runs last and outranks the supervisor, so
+  every hard block stays auditable and gives the same answer every time.
+- Each agent is its own graph rather than one large graph, because the
+  orchestrator workflow is what fans them out. That keeps the concurrency, the
+  retries, and the durability of partial results in Temporal.
+- An agent concludes by calling a `submit_finding` tool whose schema is its
+  finding. That avoids a second round trip just to format the answer. On its
+  final permitted turn the data tools are withheld, so an agent that would
+  otherwise loop is forced to conclude instead of failing the workflow.
 - The extraction graph has two nodes: the Bedrock call runs as an Activity
   because it does I/O and needs retries and timeouts, and the normalization
   step runs on the workflow thread because it is pure and cheap. Both
   execution locations are exercised on every run.
 - The Temporal LangGraph plugin is in Public Preview.
 
-## A gotcha worth knowing
+## Gotchas worth knowing
 
-Since Temporal Python SDK 1.32, a Worker inherits the plugins registered on its
-Client. Passing the same `LangGraphPlugin` to both, which older examples show,
-registers the graph's node activities twice and the Worker refuses to start
-with `More than one activity named po-extraction.extract_po`. Register it on
-the Client only.
+Three things cost real time to find while building this, all specific to
+running LangGraph under the Temporal plugin.
+
+**Worker plugins are inherited from the Client.** Since Temporal Python SDK
+1.32, passing the same `LangGraphPlugin` to both the Client and the Worker,
+which older examples show, registers each graph's node activities twice and the
+Worker refuses to start with `More than one activity named
+po-extraction.extract_po`. Register it on the Client only.
+
+**Node functions must live at module level.** The plugin identifies each node
+by module and qualified name, so a node produced by a factory raises
+`Cannot identify task ...: closures/local functions are not supported`. That is
+why every agent module declares its own two-line `call_model` and `run_tools`
+over the shared logic in `agents/react_agent.py`. The upside is that each agent
+gets a distinct activity name in the Temporal UI, which matters when five
+agents are running.
+
+**Conditional edge routers must be async.** LangGraph awaits an async branch
+function directly but offloads a sync one through `loop.run_in_executor`, and a
+Temporal workflow's event loop raises `NotImplementedError` for that on purpose,
+since running workflow logic on a thread pool would be non-deterministic. A
+sync router fails the workflow task with a bare `NotImplementedError` from
+`asyncio/events.py` and no useful context.

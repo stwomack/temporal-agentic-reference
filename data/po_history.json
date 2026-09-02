@@ -1,0 +1,8 @@
+[
+  {"po_id": "PO-2026-04412", "vendor": "Halden Industrial Supply", "total_amount": 2480.0, "currency": "USD", "requester": "Tomas Lindqvist", "submitted_at": "2026-07-15", "description": "Hydraulic hose assortment and push-lok fittings for the utilities loop."},
+  {"po_id": "PO-2026-04390", "vendor": "Northwind Packaging Co.", "total_amount": 7900.0, "currency": "USD", "requester": "Dana Whitfield", "submitted_at": "2026-06-11", "description": "Carton dividers and edge protectors for the export pallet program."},
+  {"po_id": "PO-2026-04201", "vendor": "Continental Filling Systems", "total_amount": 71500.0, "currency": "USD", "requester": "Marcus Oyelaran", "submitted_at": "2026-05-18", "description": "Conveyor drive retrofit and controls migration, project CX-1998."},
+  {"po_id": "PO-2026-04188", "vendor": "Northwind Packaging Co.", "total_amount": 18300.0, "currency": "USD", "requester": "Dana Whitfield", "submitted_at": "2026-08-24", "description": "Shrink film, 240 rolls, and printed case tape, 180 cases. Quarterly bulk order for the export line."},
+  {"po_id": "PO-2026-04077", "vendor": "Pinnacle Cold Chain Ltd", "total_amount": 22400.0, "currency": "USD", "requester": "Priya Raghunathan", "submitted_at": "2026-03-30", "description": "Refrigerated linehaul, six lanes, March schedule."},
+  {"po_id": "PO-2026-03955", "vendor": "Halden Industrial Supply", "total_amount": 3110.0, "currency": "USD", "requester": "Tomas Lindqvist", "submitted_at": "2026-02-14", "description": "Bearing assortment and gearbox oil."}
+]

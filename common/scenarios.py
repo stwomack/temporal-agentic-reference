@@ -42,6 +42,18 @@ Vendor: Acme Shell Corp
 Expedited freight brokerage for 6 truckloads, $3,200.00 per load, order total
 $19,200.00. Vendor was recommended by a broker; no prior contract on file."""
 
+PROBATIONARY_TEXT = """Purchase order request from Priya Raghunathan,
+Regional Logistics.
+Vendor: Pinnacle Cold Chain Ltd
+Refrigerated linehaul for the September schedule, four lanes at $2,150.00 per
+lane. Order total $8,600.00. Same lanes we have been running since spring."""
+
+DUPLICATE_TEXT = """Purchase order request from Dana Whitfield, Beverage Ops.
+Vendor: Northwind Packaging Co.
+Need 240 rolls of shrink film and 180 cases of printed case tape for the export
+line. Quarterly bulk buy, order total $18,240.00. Please expedite, the last one
+may not have gone through."""
+
 RETRY_TEXT = """Purchase order request from Tomas Lindqvist, Maintenance.
 Vendor: Halden Industrial Supply
 Order 60 cases of food grade chain lubricant at $74.50 per case and 15
@@ -96,6 +108,33 @@ SCENARIOS: dict[Scenario, ScenarioSpec] = {
         ),
         expected_outcome="rejected_by_human",
         raw_text=LARGE_ORDER_TEXT,
+        approval_threshold=25_000.0,
+        erp_seeded_failures=0,
+    ),
+    Scenario.AGENT_ESCALATION: ScenarioSpec(
+        scenario=Scenario.AGENT_ESCALATION,
+        title="Agent judgment escalation",
+        description=(
+            "Well under the spending threshold, so the deterministic guardrail "
+            "passes it. The vendor risk and policy agents find a probationary "
+            "vendor with open cold chain findings, and the supervisor "
+            "escalates anyway."
+        ),
+        expected_outcome="awaiting_approval",
+        raw_text=PROBATIONARY_TEXT,
+        approval_threshold=10_000.0,
+        erp_seeded_failures=0,
+    ),
+    Scenario.DUPLICATE_REQUEST: ScenarioSpec(
+        scenario=Scenario.DUPLICATE_REQUEST,
+        title="Duplicate catch",
+        description=(
+            "A re-submission of an order already placed nine days ago, with "
+            "different wording and a slightly different total. No rule catches "
+            "this. The duplicate detection agent reads the history and does."
+        ),
+        expected_outcome="awaiting_approval",
+        raw_text=DUPLICATE_TEXT,
         approval_threshold=25_000.0,
         erp_seeded_failures=0,
     ),

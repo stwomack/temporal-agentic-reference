@@ -22,6 +22,8 @@ class Scenario(str, Enum):
     HUMAN_APPROVAL = "human_approval"
     HUMAN_REJECTION = "human_rejection"
     ERP_RETRY = "erp_retry"
+    AGENT_ESCALATION = "agent_escalation"
+    DUPLICATE_REQUEST = "duplicate_request"
 
 
 class StepStatus(str, Enum):
@@ -38,9 +40,52 @@ class WorkflowState(str, Enum):
     AWAITING_APPROVAL = "awaiting_approval"
     SUBMITTED = "submitted"
     REJECTED_BY_POLICY = "rejected_by_policy"
+    REJECTED_BY_SUPERVISOR = "rejected_by_supervisor"
     REJECTED_BY_HUMAN = "rejected_by_human"
     APPROVAL_TIMED_OUT = "approval_timed_out"
     FAILED = "failed"
+
+
+class Severity(str, Enum):
+    """How an agent's finding should read in the UI."""
+
+    OK = "ok"
+    CAUTION = "caution"
+    BLOCKER = "blocker"
+
+
+class SupervisorRecommendation(str, Enum):
+    AUTO_APPROVE = "auto_approve"
+    ESCALATE_TO_HUMAN = "escalate_to_human"
+    REJECT = "reject"
+
+
+class AgentFinding(BaseModel):
+    """One agent's output, in the single shape the UI renders.
+
+    `raw` keeps the agent's own typed schema so nothing is lost, while the
+    headline, detail, and severity fields give every agent a uniform surface.
+    """
+
+    agent: str
+    label: str
+    model_id: str = ""
+    turns: int = 0
+    tool_calls: list[str] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    headline: str = ""
+    detail: str = ""
+    severity: Severity = Severity.OK
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class SupervisorVerdict(BaseModel):
+    """The routing decision the supervisor agent hands back to the workflow."""
+
+    recommendation: SupervisorRecommendation
+    rationale: str = ""
+    confidence: float = 0.0
 
 
 class LineItem(BaseModel):
@@ -124,6 +169,8 @@ class POWorkflowStatus(BaseModel):
     current_step: Optional[str] = None
     steps: list[StepEvent] = Field(default_factory=list)
     extracted: Optional[ExtractedPO] = None
+    agent_findings: list[AgentFinding] = Field(default_factory=list)
+    supervisor: Optional[SupervisorVerdict] = None
     guardrail: Optional[GuardrailResult] = None
     decision: Optional[ApprovalDecision] = None
     erp: Optional[ERPResult] = None
@@ -135,6 +182,8 @@ class POWorkflowResult(BaseModel):
     state: WorkflowState
     summary: str
     extracted: Optional[ExtractedPO] = None
+    agent_findings: list[AgentFinding] = Field(default_factory=list)
+    supervisor: Optional[SupervisorVerdict] = None
     guardrail: Optional[GuardrailResult] = None
     decision: Optional[ApprovalDecision] = None
     erp: Optional[ERPResult] = None

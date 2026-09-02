@@ -9,6 +9,9 @@
 
 const el = (id) => document.getElementById(id);
 
+// Populated from /api/steps so the UI never hardcodes which steps are agents.
+const AGENT_STEP_NAMES = new Set();
+
 const state = {
   steps: [],
   scenarios: [],
@@ -21,7 +24,8 @@ const state = {
 
 const TERMINAL_STATES = {
   submitted: { cls: "good", text: "Submitted to ERP" },
-  rejected_by_policy: { cls: "bad", text: "Rejected by policy guardrail" },
+  rejected_by_policy: { cls: "bad", text: "Rejected by the deterministic guardrail" },
+  rejected_by_supervisor: { cls: "bad", text: "Rejected by the supervisor agent" },
   rejected_by_human: { cls: "bad", text: "Rejected by human reviewer" },
   approval_timed_out: { cls: "warn", text: "Approval deadline passed" },
   failed: { cls: "bad", text: "Workflow failed" },
@@ -80,6 +84,13 @@ async function loadStatic() {
     }
     state.steps = steps;
     state.scenarios = scenarios;
+    for (const column of steps) {
+      for (const step of column) {
+        if (step.is_agent) {
+          AGENT_STEP_NAMES.add(step.name);
+        }
+      }
+    }
     renderScenarios();
     renderDiagram(null);
   } catch (err) {
@@ -149,6 +160,8 @@ function resetView() {
   el("pending").hidden = true;
   el("extracted").className = "extracted empty";
   el("extracted").textContent = "Nothing extracted yet.";
+  el("findings").className = "findings empty";
+  el("findings").textContent = "No agent has reported yet.";
   el("feed").tBodies[0].innerHTML =
     '<tr class="empty-row"><td colspan="5">No events yet.</td></tr>';
   el("code-meta").textContent = "Start a scenario to follow the executing code.";
@@ -195,6 +208,7 @@ function subscribe(workflowId) {
 function render(payload) {
   const status = payload.status;
   renderDiagram(status);
+  renderFindings(status);
   renderFeed(status);
   renderPending(payload.pending_activities || []);
   renderExtracted(status);
@@ -215,44 +229,120 @@ function renderDiagram(status) {
     }
   }
 
-  state.steps.forEach((definition, index) => {
-    const step = byName[definition.name];
-    const node = document.createElement("div");
-    const statusName = step ? step.status : "pending";
-    node.className = `node ${statusName}`;
+  state.steps.forEach((column, index) => {
+    const columnEl = document.createElement("div");
+    columnEl.className = column.length > 1 ? "column fanout" : "column";
 
-    const label = document.createElement("div");
-    label.className = "node-label";
-    label.textContent = definition.label;
+    for (const definition of column) {
+      const step = byName[definition.name];
+      const node = document.createElement("div");
+      const statusName = step ? step.status : "pending";
+      node.className = `node ${statusName}`;
 
-    const statusLine = document.createElement("div");
-    statusLine.className = "node-status";
-    let statusText = statusName;
-    if (step && step.latency_ms !== null && step.latency_ms !== undefined) {
-      statusText += ` (${step.latency_ms} ms)`;
+      const label = document.createElement("div");
+      label.className = "node-label";
+      label.textContent = definition.label;
+      if (definition.is_agent) {
+        const badge = document.createElement("span");
+        badge.className = "agent-badge";
+        badge.textContent = "agent";
+        label.appendChild(badge);
+      }
+
+      const statusLine = document.createElement("div");
+      statusLine.className = "node-status";
+      let statusText = statusName;
+      if (step && step.latency_ms !== null && step.latency_ms !== undefined) {
+        statusText += ` (${step.latency_ms} ms)`;
+      }
+      if (step && step.attempts > 1) {
+        statusText += ` after ${step.attempts} attempts`;
+      }
+      statusLine.textContent = statusText;
+
+      node.append(label, statusLine);
+
+      if (step && step.detail) {
+        const detail = document.createElement("div");
+        detail.className = "node-detail";
+        detail.textContent = step.detail;
+        node.appendChild(detail);
+      }
+      columnEl.appendChild(node);
     }
-    if (step && step.attempts > 1) {
-      statusText += ` after ${step.attempts} attempts`;
-    }
-    statusLine.textContent = statusText;
 
-    node.append(label, statusLine);
-
-    if (step && step.detail) {
-      const detail = document.createElement("div");
-      detail.className = "node-detail";
-      detail.textContent = step.detail;
-      node.appendChild(detail);
-    }
-
-    host.appendChild(node);
+    host.appendChild(columnEl);
     if (index < state.steps.length - 1) {
       const arrow = document.createElement("div");
       arrow.className = "arrow";
-      arrow.textContent = "→";
+      arrow.textContent = "\u2192";
       host.appendChild(arrow);
     }
   });
+}
+
+const SEVERITY_ORDER = { blocker: 0, caution: 1, ok: 2 };
+
+function renderFindings(status) {
+  const host = el("findings");
+  const findings = (status && status.agent_findings) || [];
+  const running = (status && status.steps ? status.steps : []).filter(
+    (step) => step.status === "running" && AGENT_STEP_NAMES.has(step.name)
+  );
+
+  if (findings.length === 0 && running.length === 0) {
+    host.className = "findings empty";
+    host.textContent = "No agent has reported yet.";
+    return;
+  }
+
+  host.className = "findings";
+  host.textContent = "";
+
+  for (const finding of findings) {
+    const card = document.createElement("div");
+    card.className = `finding ${finding.severity}`;
+
+    const title = document.createElement("h3");
+    title.textContent = finding.label;
+
+    const headline = document.createElement("div");
+    headline.className = "headline";
+    headline.textContent = finding.headline;
+
+    const rationale = document.createElement("div");
+    rationale.className = "rationale";
+    rationale.textContent = finding.detail;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const tools = finding.tool_calls.length ? finding.tool_calls.join(", ") : "none";
+    meta.textContent =
+      `${finding.model_id}\n` +
+      `${finding.turns} turn(s), tools: ${tools}\n` +
+      `${finding.input_tokens} in / ${finding.output_tokens} out tokens`;
+
+    card.append(title, headline, rationale, meta);
+    host.appendChild(card);
+  }
+
+  // Show a placeholder for an agent that is still working, so the panel fills
+  // in progressively during the fan out instead of appearing all at once.
+  const reported = new Set(findings.map((f) => f.agent));
+  for (const step of running) {
+    if (reported.has(step.name)) {
+      continue;
+    }
+    const card = document.createElement("div");
+    card.className = "finding running";
+    const title = document.createElement("h3");
+    title.textContent = step.label;
+    const headline = document.createElement("div");
+    headline.className = "headline";
+    headline.textContent = "Running";
+    card.append(title, headline);
+    host.appendChild(card);
+  }
 }
 
 function renderFeed(status) {
@@ -390,8 +480,14 @@ function renderApproval(status) {
   if (!awaiting) {
     return;
   }
+  // The workflow already composed the reason, which may be a supervisor
+  // escalation, a threshold breach, or both. Reading the guardrail alone would
+  // print "no approval needed" on an agent driven escalation.
+  const approvalStep = (status.steps || []).find((step) => step.name === "approval");
   el("approval-reason").textContent =
-    (status.guardrail && status.guardrail.reason) || "A decision is required.";
+    (approvalStep && approvalStep.detail) ||
+    (status.guardrail && status.guardrail.reason) ||
+    "A decision is required.";
   el("btn-approve").disabled = state.decisionInFlight;
   el("btn-reject").disabled = state.decisionInFlight;
 }
@@ -412,6 +508,9 @@ function renderOutcome(payload, status) {
   }
   if (status.guardrail && status.guardrail.blocked) {
     text += `. ${status.guardrail.reason}`;
+  }
+  if (status.supervisor && stateName !== "rejected_by_policy") {
+    text += `. Supervisor: ${status.supervisor.recommendation}`;
   }
   if (status.decision) {
     text += `. Decision by ${status.decision.decided_by}`;
@@ -482,7 +581,7 @@ async function syncCodePanel(status) {
 }
 
 function paintCode(source) {
-  el("code-meta").textContent = `${source.file} : ${source.function}() lines ${source.start_line}-${source.end_line}`;
+  el("code-meta").textContent = `${source.file} : ${source.symbol} lines ${source.start_line}-${source.end_line}`;
   const host = el("code").firstElementChild;
   host.textContent = "";
   let firstHighlighted = null;

@@ -32,7 +32,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from api.source import SourceLookupError, load_step_source
 from common.config import get_settings
-from common.constants import STEP_LABELS, STEP_ORDER
+from common.constants import AGENT_STEPS, DIAGRAM_COLUMNS, STEP_LABELS
 from common.models import (
     ApprovalDecision,
     POWorkflowInput,
@@ -215,9 +215,23 @@ async def health() -> dict[str, Any]:
 
 
 @app.get("/api/steps")
-async def steps() -> list[dict[str, str]]:
-    """The diagram's node list, so the UI does not hardcode the pipeline."""
-    return [{"name": name, "label": STEP_LABELS[name]} for name in STEP_ORDER]
+async def steps() -> list[list[dict[str, Any]]]:
+    """The diagram layout, so the UI does not hardcode the pipeline.
+
+    One entry per column. A column holding more than one step is drawn as a
+    concurrent fan out, which is exactly how the workflow dispatches it.
+    """
+    return [
+        [
+            {
+                "name": name,
+                "label": STEP_LABELS[name],
+                "is_agent": name in AGENT_STEPS,
+            }
+            for name in column
+        ]
+        for column in DIAGRAM_COLUMNS
+    ]
 
 
 @app.get("/api/scenarios")

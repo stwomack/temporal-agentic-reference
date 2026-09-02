@@ -19,11 +19,27 @@ class SourceLookupError(Exception):
     pass
 
 
-def _find_function(tree: ast.AST, name: str) -> ast.AST | None:
-    """Find a top level or class level def by name."""
+def _find_symbol(tree: ast.AST, name: str) -> ast.AST | None:
+    """Find a def, class, or module level assignment by name.
+
+    Functions are the obvious target, but for an agent the most useful code to
+    put on screen is its system prompt, which is a module level constant. This
+    handles all three so common/constants.py can point at whichever best
+    explains a step.
+    """
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == name
+        ):
             return node
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return node
+        if isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == name:
+                return node
     return None
 
 
@@ -33,6 +49,7 @@ def load_step_source(step: str) -> dict:
         raise SourceLookupError(f"No source mapping for step {step!r}")
 
     relative = location["file"]
+    symbol = location["symbol"]
     path = (REPO_ROOT / relative).resolve()
     # Never serve anything outside the repo.
     if not path.is_relative_to(REPO_ROOT) or not path.is_file():
@@ -40,14 +57,12 @@ def load_step_source(step: str) -> dict:
 
     text = path.read_text(encoding="utf-8")
     try:
-        node = _find_function(ast.parse(text), location["function"])
+        node = _find_symbol(ast.parse(text), symbol)
     except SyntaxError as exc:
         raise SourceLookupError(f"Cannot parse {relative}: {exc}") from exc
 
     if node is None:
-        raise SourceLookupError(
-            f"Function {location['function']!r} not found in {relative}"
-        )
+        raise SourceLookupError(f"Symbol {symbol!r} not found in {relative}")
 
     # Include the decorator lines so @activity.defn is visible in the panel.
     start = min(
@@ -58,7 +73,7 @@ def load_step_source(step: str) -> dict:
     return {
         "step": step,
         "file": relative,
-        "function": location["function"],
+        "symbol": symbol,
         "start_line": start,
         "end_line": end,
         "code": text,

@@ -1,26 +1,42 @@
-"""Stories 2.1 and 2.4: the purchase order approval orchestrator.
+"""The purchase order approval orchestrator.
 
-Sequence:
+Temporal is the multi-agent orchestrator here. Five model-backed agents run
+under it, and the fan out, the retries, and the durability of partial results
+all belong to Temporal rather than to any agent framework.
 
-    extract   run the LangGraph extraction agent. Its Bedrock node executes as
-              a Temporal Activity via LangGraphPlugin.
-    guardrail deterministic policy check Activity.
-    approval  only when the guardrail asks for it. The workflow parks on
-              workflow.wait_condition and is woken by an Update or Signal.
-              No polling.
-    erp       simulated ERP submission Activity whose retries are handled
-              entirely by Temporal's RetryPolicy.
+    extract       Extraction agent reads the raw request.
+
+    fan out       Three specialists run concurrently, each its own LangGraph
+                  agent with its own model, timeout, and retry policy:
+                  vendor risk (tool using), policy compliance, and duplicate
+                  detection (tool using). They dispatch on a single workflow
+                  task, so history shows three activities in flight at once.
+                  If the worker dies mid fan out, the specialists that already
+                  finished are not re-run and their Bedrock calls are not paid
+                  for twice.
+
+    supervisor    Reads all three findings and routes the request.
+
+    guardrail     Deterministic threshold and blocked vendor check. It runs
+                  after the supervisor and outranks it: an agent cannot talk a
+                  hard block into an approval. The agents add judgment on top
+                  of rules they cannot weaken.
+
+    approval      Human decision, delivered by Temporal Update or Signal, only
+                  when the supervisor escalates or the guardrail asks for it.
+
+    erp           Simulated submission whose retries are Temporal's.
 
 Every step is recorded in `self._steps`, which the `status` query returns. That
-one query drives both the live diagram and the telemetry feed in the UI, so the
-UI never has to guess where the workflow is.
+one query drives the diagram, the telemetry feed, and the code panel in the UI,
+so the UI cannot disagree with the workflow.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -30,16 +46,33 @@ with workflow.unsafe.imports_passed_through():
 
     from activities.erp import ERPSubmission, submit_to_erp
     from activities.guardrail import check_guardrails
+    from agents import (
+        duplicate_detection,
+        policy_compliance,
+        vendor_risk,
+    )
+    from agents import (
+        supervisor as supervisor_agent,
+    )
     from common.constants import (
+        DUPLICATE_GRAPH_NAME,
         EXTRACTION_GRAPH_NAME,
+        POLICY_GRAPH_NAME,
         STEP_APPROVAL,
+        STEP_DUPLICATE,
         STEP_ERP,
         STEP_EXTRACT,
         STEP_GUARDRAIL,
         STEP_LABELS,
         STEP_ORDER,
+        STEP_POLICY,
+        STEP_SUPERVISOR,
+        STEP_VENDOR_RISK,
+        SUPERVISOR_GRAPH_NAME,
+        VENDOR_RISK_GRAPH_NAME,
     )
     from common.models import (
+        AgentFinding,
         ApprovalDecision,
         ERPResult,
         ExtractedPO,
@@ -49,6 +82,8 @@ with workflow.unsafe.imports_passed_through():
         POWorkflowStatus,
         StepEvent,
         StepStatus,
+        SupervisorRecommendation,
+        SupervisorVerdict,
         WorkflowState,
     )
 
@@ -67,6 +102,8 @@ class POApprovalWorkflow:
             for name in STEP_ORDER
         }
         self._extracted: Optional[ExtractedPO] = None
+        self._findings: dict[str, AgentFinding] = {}
+        self._supervisor: Optional[SupervisorVerdict] = None
         self._guardrail: Optional[GuardrailResult] = None
         self._decision: Optional[ApprovalDecision] = None
         self._erp: Optional[ERPResult] = None
@@ -118,6 +155,10 @@ class POApprovalWorkflow:
             current_step=self._current_step,
             steps=[self._steps[name] for name in STEP_ORDER],
             extracted=self._extracted,
+            agent_findings=[
+                self._findings[name] for name in STEP_ORDER if name in self._findings
+            ],
+            supervisor=self._supervisor,
             guardrail=self._guardrail,
             decision=self._decision,
             erp=self._erp,
@@ -167,15 +208,32 @@ class POApprovalWorkflow:
         )
 
         self._extracted = await self._extract()
+        await self._run_specialists(self._extracted)
+        self._supervisor = await self._supervise(self._extracted)
         self._guardrail = await self._check_policy(self._extracted)
 
+        # The deterministic guardrail outranks the supervisor. An agent can
+        # escalate or reject, but it cannot approve past a hard block.
         if self._guardrail.blocked:
             self._skip(STEP_APPROVAL, "No human override for a policy block")
             self._skip(STEP_ERP, "Not submitted, rejected by policy")
             self._state = WorkflowState.REJECTED_BY_POLICY
-            return self._result("Rejected by policy guardrail")
+            return self._result("Rejected by the deterministic policy guardrail")
 
-        if self._guardrail.requires_approval:
+        recommendation = self._supervisor.recommendation
+        if recommendation is SupervisorRecommendation.REJECT:
+            self._skip(STEP_APPROVAL, "Supervisor rejected outright")
+            self._skip(STEP_ERP, "Not submitted, rejected by the supervisor agent")
+            self._state = WorkflowState.REJECTED_BY_SUPERVISOR
+            return self._result(
+                f"Rejected by the supervisor agent: {self._supervisor.rationale}"
+            )
+
+        needs_human = (
+            recommendation is SupervisorRecommendation.ESCALATE_TO_HUMAN
+            or self._guardrail.requires_approval
+        )
+        if needs_human:
             approved = await self._await_human_decision()
             if approved is None:
                 self._skip(STEP_ERP, "Not submitted, approval timed out")
@@ -186,7 +244,10 @@ class POApprovalWorkflow:
                 self._state = WorkflowState.REJECTED_BY_HUMAN
                 return self._result("Rejected by human reviewer")
         else:
-            self._skip(STEP_APPROVAL, "Within policy, no approval required")
+            self._skip(
+                STEP_APPROVAL,
+                "Supervisor auto approved and the request is within policy",
+            )
 
         self._erp = await self._submit_to_erp(self._extracted)
         self._state = WorkflowState.SUBMITTED
@@ -198,8 +259,8 @@ class POApprovalWorkflow:
     # ------------------------------------------------------------- the steps
 
     async def _extract(self) -> ExtractedPO:
-        """Story 2.2. `graph()` returns the StateGraph registered on the
-        plugin; its extract_po node runs as a Temporal Activity."""
+        """`graph()` returns the StateGraph registered on the plugin; its
+        extract_po node runs as a Temporal Activity."""
         self._begin(STEP_EXTRACT, "Invoking Bedrock through the LangGraph agent")
         runnable = graph(EXTRACTION_GRAPH_NAME).compile()
         result = await runnable.ainvoke({"raw_text": self._input.raw_text})
@@ -215,8 +276,92 @@ class POApprovalWorkflow:
         )
         return extracted
 
+    async def _run_agent(
+        self,
+        step: str,
+        graph_name: str,
+        task: str,
+        to_finding: Callable[[dict[str, Any]], AgentFinding],
+    ) -> AgentFinding:
+        """Run one specialist agent end to end and record it as a step."""
+        self._begin(step, "Running")
+        runnable = graph(graph_name).compile()
+        state = await runnable.ainvoke({"task": task})
+        finding = to_finding(state)
+        self._findings[step] = finding
+        tools = ", ".join(finding.tool_calls) or "none"
+        self._finish(
+            step,
+            detail=(
+                f"{finding.headline} | {finding.turns} turn(s), tools: {tools}, "
+                f"tokens={finding.input_tokens}in/{finding.output_tokens}out"
+            ),
+        )
+        return finding
+
+    async def _run_specialists(self, extracted: ExtractedPO) -> None:
+        """Fan out the three specialists concurrently.
+
+        asyncio.gather in a workflow is deterministic: the SDK schedules all
+        three activities from one workflow task and replays their completions
+        in recorded order. The visible effect in the Temporal UI is three
+        activities in flight at once, and the durable effect is that a worker
+        crash mid fan out does not re-run the ones that already finished.
+        """
+        vendor_context = ""
+        self._current_step = STEP_VENDOR_RISK
+
+        findings = await asyncio.gather(
+            self._run_agent(
+                STEP_VENDOR_RISK,
+                VENDOR_RISK_GRAPH_NAME,
+                vendor_risk.task(extracted.model_dump()),
+                vendor_risk.to_finding,
+            ),
+            self._run_agent(
+                STEP_POLICY,
+                POLICY_GRAPH_NAME,
+                policy_compliance.task(extracted.model_dump(), vendor_context),
+                policy_compliance.to_finding,
+            ),
+            self._run_agent(
+                STEP_DUPLICATE,
+                DUPLICATE_GRAPH_NAME,
+                duplicate_detection.task(extracted.model_dump()),
+                duplicate_detection.to_finding,
+            ),
+        )
+        workflow.logger.info(
+            "specialists complete: %s",
+            ", ".join(f"{f.agent}={f.severity.value}" for f in findings),
+        )
+
+    async def _supervise(self, extracted: ExtractedPO) -> SupervisorVerdict:
+        """The routing agent. Reads the specialists, decides where this goes."""
+        ordered = [
+            self._findings[name]
+            for name in (STEP_VENDOR_RISK, STEP_POLICY, STEP_DUPLICATE)
+            if name in self._findings
+        ]
+        self._begin(STEP_SUPERVISOR, "Weighing the specialist findings")
+        runnable = graph(SUPERVISOR_GRAPH_NAME).compile()
+        state = await runnable.ainvoke(
+            {"task": supervisor_agent.task(extracted.model_dump(), ordered)}
+        )
+        verdict = supervisor_agent.to_verdict(state)
+        finding = supervisor_agent.to_finding(state)
+        self._findings[STEP_SUPERVISOR] = finding
+        self._finish(
+            STEP_SUPERVISOR,
+            detail=(
+                f"{verdict.recommendation.value} "
+                f"(confidence {verdict.confidence:.0%}): {verdict.rationale}"
+            ),
+        )
+        return verdict
+
     async def _check_policy(self, extracted: ExtractedPO) -> GuardrailResult:
-        """Story 2.3."""
+        """Deterministic threshold and blocked vendor check."""
         self._begin(STEP_GUARDRAIL, "Evaluating spend policy")
         result = await workflow.execute_activity(
             check_guardrails,
@@ -228,7 +373,7 @@ class POApprovalWorkflow:
         return result
 
     async def _await_human_decision(self) -> Optional[bool]:
-        """Story 2.4. Park until an Update or Signal arrives.
+        """Park until an Update or Signal arrives.
 
         Returns True for approved, False for rejected, None if the deadline
         passed with no decision. `wait_condition` suspends the workflow with no
@@ -237,7 +382,7 @@ class POApprovalWorkflow:
         step = self._steps[STEP_APPROVAL]
         step.status = StepStatus.WAITING
         step.started_at = workflow.now()
-        step.detail = self._guardrail.reason if self._guardrail else "Awaiting decision"
+        step.detail = self._approval_reason()
         self._current_step = STEP_APPROVAL
         self._state = WorkflowState.AWAITING_APPROVAL
         workflow.logger.info("Awaiting human decision for %s", self._input.po_id)
@@ -274,13 +419,23 @@ class POApprovalWorkflow:
         )
         return decision.approved
 
+    def _approval_reason(self) -> str:
+        """Why a human is being asked, which can be the agent or the rule."""
+        reasons = []
+        if (
+            self._supervisor
+            and self._supervisor.recommendation
+            is SupervisorRecommendation.ESCALATE_TO_HUMAN
+        ):
+            reasons.append(f"Supervisor agent escalated: {self._supervisor.rationale}")
+        if self._guardrail and self._guardrail.requires_approval:
+            reasons.append(self._guardrail.reason)
+        return " ".join(reasons) or "Awaiting decision"
+
     async def _submit_to_erp(self, extracted: ExtractedPO) -> ERPResult:
-        """Story 2.5. Retries are Temporal's, configured here and nowhere else."""
+        """Retries are Temporal's, configured here and nowhere else."""
         seeded = self._input.erp_seeded_failures or 0
-        self._begin(
-            STEP_ERP,
-            f"Submitting to ERP (seeded failures: {seeded})",
-        )
+        self._begin(STEP_ERP, f"Submitting to ERP (seeded failures: {seeded})")
         result = await workflow.execute_activity(
             submit_to_erp,
             ERPSubmission(
@@ -320,6 +475,10 @@ class POApprovalWorkflow:
             state=self._state,
             summary=summary,
             extracted=self._extracted,
+            agent_findings=[
+                self._findings[name] for name in STEP_ORDER if name in self._findings
+            ],
+            supervisor=self._supervisor,
             guardrail=self._guardrail,
             decision=self._decision,
             erp=self._erp,

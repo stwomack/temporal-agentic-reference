@@ -18,13 +18,18 @@ def test_every_step_resolves_to_real_source(step: str):
     assert step in STEP_SOURCE, f"step {step} has no source mapping"
     source = load_step_source(step)
     assert source["file"] == STEP_SOURCE[step]["file"]
-    assert source["function"] == STEP_SOURCE[step]["function"]
+    assert source["symbol"] == STEP_SOURCE[step]["symbol"]
     assert 1 <= source["start_line"] <= source["end_line"]
 
     lines = source["code"].split("\n")
     assert source["end_line"] <= len(lines)
     highlighted = "\n".join(lines[source["start_line"] - 1 : source["end_line"]])
-    assert f"def {source['function']}" in highlighted
+    symbol = source["symbol"]
+    assert (
+        f"def {symbol}" in highlighted
+        or f"class {symbol}" in highlighted
+        or f"{symbol} =" in highlighted
+    ), f"highlighted range for {step} does not contain {symbol}"
 
 
 def test_highlight_includes_decorators():

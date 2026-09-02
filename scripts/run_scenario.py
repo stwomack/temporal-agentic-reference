@@ -76,7 +76,10 @@ async def main() -> int:
     for _ in range(120):
         status = await handle.query(POApprovalWorkflow.status)
         if status.state is WorkflowState.AWAITING_APPROVAL:
-            print(f"awaiting approval: {status.guardrail.reason if status.guardrail else ''}")
+            approval_step = next(
+                (x for x in status.steps if x.name == "approval"), None
+            )
+            print(f"awaiting approval: {approval_step.detail if approval_step else ''}")
             await handle.execute_update(
                 POApprovalWorkflow.submit_decision,
                 ApprovalDecision(
@@ -104,7 +107,20 @@ async def main() -> int:
     status = await handle.query(POApprovalWorkflow.status)
     for step in status.steps:
         latency = f"{step.latency_ms}ms" if step.latency_ms is not None else "-"
-        print(f"  {step.name:<10} {step.status.value:<10} {latency:>8}  {step.detail}")
+        print(f"  {step.name:<20} {step.status.value:<10} {latency:>8}  {step.detail[:96]}")
+
+    if status.agent_findings:
+        print("\nagent findings:")
+        for finding in status.agent_findings:
+            tools = ",".join(finding.tool_calls) or "none"
+            print(
+                f"  {finding.agent:<20} [{finding.severity.value:<8}] "
+                f"{finding.headline}"
+            )
+            print(
+                f"  {'':<20}  model={finding.model_id} turns={finding.turns} "
+                f"tools={tools} tokens={finding.input_tokens}in/{finding.output_tokens}out"
+            )
     return 0 if result.state is not WorkflowState.FAILED else 1
 
 

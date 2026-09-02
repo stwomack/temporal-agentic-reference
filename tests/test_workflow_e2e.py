@@ -17,10 +17,13 @@ from temporalio.worker import Worker
 
 from activities.erp import submit_to_erp
 from activities.guardrail import check_guardrails
+from common.constants import AGENT_STEPS, FANOUT_STEPS
 from common.models import (
     ApprovalDecision,
     POWorkflowInput,
     Scenario,
+    Severity,
+    SupervisorRecommendation,
     WorkflowState,
 )
 from common.scenarios import SCENARIOS
@@ -103,6 +106,16 @@ async def test_happy_path_submits_to_erp(temporal_client):
     assert by_name["erp"].status.value == "completed"
     assert by_name["extract"].latency_ms is not None
 
+    # All five agents ran and reported.
+    reported = {finding.agent for finding in result.agent_findings}
+    assert reported == AGENT_STEPS - {"extract"} | {"supervisor"} or reported >= set(
+        FANOUT_STEPS
+    ) | {"supervisor"}
+    for finding in result.agent_findings:
+        assert finding.model_id, f"{finding.agent} did not record a model id"
+        assert finding.input_tokens > 0, f"{finding.agent} reported no token usage"
+    assert result.supervisor is not None
+
 
 async def test_blocked_vendor_never_reaches_erp(temporal_client):
     task_queue = f"test-{uuid.uuid4()}"
@@ -114,6 +127,13 @@ async def test_blocked_vendor_never_reaches_erp(temporal_client):
     assert result.state is WorkflowState.REJECTED_BY_POLICY
     assert result.erp is None
     assert result.guardrail is not None and result.guardrail.blocked
+
+    # The vendor risk agent should independently reach the same conclusion the
+    # deterministic rule did. If it does not, the demo's central claim that the
+    # two layers reinforce each other is not holding up.
+    vendor = next(f for f in result.agent_findings if f.agent == "vendor_risk")
+    assert vendor.severity is Severity.BLOCKER, vendor.detail
+    assert "lookup_vendor" in vendor.tool_calls
 
     by_name = {step.name: step for step in status.steps}
     assert by_name["erp"].status.value == "skipped"
@@ -205,3 +225,82 @@ async def test_approval_deadline_expires_without_a_decision(temporal_client):
     by_name = {step.name: step for step in status.steps}
     assert by_name["approval"].status.value == "failed"
     assert by_name["erp"].status.value == "skipped"
+
+
+async def test_the_three_specialists_run_concurrently(temporal_client):
+    """The fan out must actually be concurrent, not three sequential agents.
+
+    Wall clock is the honest test: three agents that each take seconds must
+    finish in well under their combined time. This is the claim the demo makes
+    in front of an audience, so it is worth asserting rather than assuming.
+    """
+    task_queue = f"test-{uuid.uuid4()}"
+    async with running_worker(temporal_client, task_queue):
+        handle = await start(temporal_client, Scenario.HAPPY_PATH, task_queue)
+        await handle.result()
+        status = await handle.query(POApprovalWorkflow.status)
+
+    by_name = {step.name: step for step in status.steps}
+    specialists = [by_name[name] for name in FANOUT_STEPS]
+    assert all(s.status.value == "completed" for s in specialists)
+
+    combined = sum(s.latency_ms for s in specialists)
+    starts = [s.started_at for s in specialists]
+    ends = [s.finished_at for s in specialists]
+    wall_clock = (max(ends) - min(starts)).total_seconds() * 1000
+
+    assert wall_clock < combined * 0.8, (
+        f"fan out took {wall_clock:.0f}ms of wall clock against {combined}ms of "
+        f"combined agent time, which is not meaningfully concurrent"
+    )
+
+
+async def test_the_guardrail_outranks_the_supervisor(temporal_client):
+    """A blocked vendor is rejected by the rule even though an agent decides
+    first. The agents add judgment on top of rules they cannot weaken."""
+    task_queue = f"test-{uuid.uuid4()}"
+    async with running_worker(temporal_client, task_queue):
+        handle = await start(temporal_client, Scenario.GUARDRAIL_VIOLATION, task_queue)
+        result = await handle.result()
+
+    assert result.state is WorkflowState.REJECTED_BY_POLICY
+    assert result.supervisor is not None
+    # Whatever the agent recommended, the deterministic block is what decided.
+    assert result.guardrail.blocked
+    assert result.erp is None
+
+
+async def test_agents_escalate_a_request_the_threshold_would_have_passed(
+    temporal_client,
+):
+    """The scenario that justifies having agents at all.
+
+    Under the spending threshold, so the deterministic guardrail passes it, but
+    the specialists find a probationary vendor with open findings and the
+    supervisor escalates to a human anyway.
+    """
+    task_queue = f"test-{uuid.uuid4()}"
+    async with running_worker(temporal_client, task_queue):
+        handle = await start(temporal_client, Scenario.AGENT_ESCALATION, task_queue)
+        await wait_for_approval(handle)
+        status = await handle.query(POApprovalWorkflow.status)
+
+        # The rule alone would not have stopped this.
+        assert status.guardrail is not None
+        assert not status.guardrail.requires_approval, status.guardrail.reason
+        assert not status.guardrail.blocked
+
+        # The agents did.
+        assert status.supervisor is not None
+        assert (
+            status.supervisor.recommendation
+            is SupervisorRecommendation.ESCALATE_TO_HUMAN
+        ), status.supervisor.rationale
+
+        await handle.execute_update(
+            POApprovalWorkflow.submit_decision,
+            ApprovalDecision(approved=True, decided_by="pytest"),
+        )
+        result = await handle.result()
+
+    assert result.state is WorkflowState.SUBMITTED

@@ -10,7 +10,7 @@
 <header class="topbar">
   <div class="brand">
     <h1>Durable purchase order approval</h1>
-    <p class="sub">Temporal orchestration, LangGraph extraction agent, Amazon Bedrock</p>
+    <p class="sub">Five Bedrock agents orchestrated by Temporal, with a deterministic guardrail and a human in the loop</p>
   </div>
   <div class="env" id="env">
     <span class="pill" id="pill-temporal">temporal: connecting</span>
@@ -35,6 +35,7 @@
     <div class="card">
       <h2>Workflow</h2>
       <div class="diagram" id="diagram"></div>
+      <p class="hint" id="fanout-note">The three specialists dispatch from a single workflow task and run concurrently.</p>
       <div class="legend">
         <span><i class="dot pending"></i>pending</span>
         <span><i class="dot running"></i>running</span>
@@ -56,6 +57,12 @@
         <button class="btn reject" id="btn-reject">Reject</button>
       </div>
       <p class="hint">Delivered as a Temporal Update. The workflow is parked on wait_condition, not polling.</p>
+    </div>
+
+    <div class="card">
+      <h2>Agent findings</h2>
+      <p class="hint">Each specialist runs as its own Temporal activity, with its own model, tools, timeout, and retry policy.</p>
+      <div id="findings" class="findings empty">No agent has reported yet.</div>
     </div>
 
     <div class="card">

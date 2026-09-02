@@ -84,6 +84,26 @@ class Settings(BaseSettings):
     bedrock_max_tokens: int = 2048
     bedrock_temperature: float = 0.0
 
+    # Per agent model overrides. Each falls back to bedrock_model_id when
+    # unset, so the demo runs on one model by default but can put a cheaper
+    # model on the mechanical agents and a stronger one on the supervisor.
+    bedrock_model_extraction: Optional[str] = None
+    bedrock_model_vendor_risk: Optional[str] = None
+    bedrock_model_policy: Optional[str] = None
+    bedrock_model_duplicate: Optional[str] = None
+    bedrock_model_supervisor: Optional[str] = None
+
+    def model_for(self, agent: str) -> str:
+        """Model id for one agent, falling back to the shared default."""
+        override = {
+            "extraction": self.bedrock_model_extraction,
+            "vendor_risk": self.bedrock_model_vendor_risk,
+            "policy_compliance": self.bedrock_model_policy,
+            "duplicate_detection": self.bedrock_model_duplicate,
+            "supervisor": self.bedrock_model_supervisor,
+        }.get(agent)
+        return override or self.bedrock_model_id
+
     # Guardrail policy. Amounts are in the PO currency, assumed USD for the demo.
     po_approval_threshold: float = Field(
         default=10_000.0,
