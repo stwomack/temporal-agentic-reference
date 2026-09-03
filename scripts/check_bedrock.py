@@ -52,6 +52,37 @@ def _bearer_token_set() -> bool:
     return bool(os.environ.get(BEARER_ENV))
 
 
+# A real Bedrock API key is a long encoded blob. Short term keys observed in
+# practice run past 2000 characters and long term keys are still well over a
+# hundred, so anything this short is a copy that lost most of its payload. The
+# console modal elides the value on screen, and copying the visible text or its
+# tooltip instead of using the copy button produces exactly that.
+MIN_PLAUSIBLE_KEY_LENGTH = 100
+
+
+def _bearer_token_problems() -> list[str]:
+    """Structural problems with the configured key, in plain words.
+
+    Everything here is derived from length and character class. The value is
+    never printed, logged, or returned.
+    """
+    key = os.environ.get(BEARER_ENV, "")
+    problems = []
+    if len(key) < MIN_PLAUSIBLE_KEY_LENGTH:
+        problems.append(
+            f"it is only {len(key)} characters, far short of a real key, so the "
+            "copy lost its payload"
+        )
+    if any(c.isspace() for c in key):
+        problems.append(
+            "it contains whitespace, so the shell split the value on export. "
+            "Wrap it in single quotes"
+        )
+    if not key.startswith(("bedrock-api-key-", "ABSK")):
+        problems.append("it does not start with a recognized Bedrock key prefix")
+    return problems
+
+
 def _fail(message: str, fix: str) -> int:
     print(f"FAIL: {message}", file=sys.stderr)
     print(f"Fix:  {fix}", file=sys.stderr)
@@ -135,11 +166,31 @@ def main() -> int:
             code in ("AccessDeniedException", "UnrecognizedClientException")
             or "API Key" in detail
         ):
+            problems = _bearer_token_problems()
+            if problems:
+                fix = (
+                    f"The key is malformed before Bedrock ever sees it: "
+                    f"{'; '.join(problems)}. The console elides the value on "
+                    "screen, so copy it with the modal's copy button rather "
+                    "than selecting the visible text."
+                )
+            else:
+                # The key survived the shell intact, so the rejection is about
+                # the key itself. Region is the first thing to check: a key is
+                # minted for the region the console was showing, and calling a
+                # different one fails with this same generic message.
+                fix = (
+                    "The key is well formed, so this is not a copy problem. "
+                    "Check that it was generated with the Bedrock console set "
+                    f"to {settings.bedrock_region}, the region this demo calls. "
+                    "A key minted in another region fails here with exactly "
+                    "this error. Then check its type: short term keys expire "
+                    "within 12 hours, and long term keys are the right choice "
+                    "for anything you hand to someone else."
+                )
             return _fail(
                 f"Bedrock rejected the API key ({code}): {detail}",
-                f"{BEARER_ENV} is set and was rejected. Short term Bedrock API "
-                "keys expire within 12 hours. Regenerate it in the Bedrock "
-                f"console, or run 'unset {BEARER_ENV}' to fall back to SigV4 "
+                f"{fix} Or run 'unset {BEARER_ENV}' to fall back to SigV4 "
                 "credentials. It overrides SigV4 for Bedrock only, so other AWS "
                 "commands keep working while this one fails.",
             )

@@ -74,18 +74,8 @@ simulated ERP submission whose retries are Temporal's.
   or an instance role) with `bedrock:InvokeModel` on the model you configure
 
 The demo never shells out to the AWS CLI. It reads credentials through boto3,
-so the CLI is optional. A Bedrock API key on its own is enough:
-
-```bash
-export AWS_BEARER_TOKEN_BEDROCK=...   # Bedrock console, under API keys
-```
-
-That is the shortest path for a workshop, with no profile and no CLI to set
-up. Two things to know about it. Short term keys expire within 12 hours. And
-the variable overrides normal credentials for Bedrock calls and nothing else,
-so a stale key fails this demo while every other AWS command on the machine
-keeps working. `./scripts/check_bedrock.sh` prints which of the two paths it
-used and names an expired key specifically.
+so the CLI is optional and a Bedrock API key on its own is enough. See
+"Running with a Bedrock API key" below.
 
 No Temporal background is assumed. The steps below are the whole story.
 
@@ -131,6 +121,60 @@ Tokens: input=7 output=3
 If it fails, fix that first. Nothing downstream can work without it, and
 nothing in this repo falls back to a canned model response.
 
+## Running with a Bedrock API key
+
+The lowest friction way to run this on a machine with no AWS setup. One
+environment variable, no profile, no CLI:
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK='...'    # single quotes, see below
+./scripts/check_bedrock.sh
+```
+
+Generate the key in the Bedrock console under API keys. Four things decide
+whether it works, and all four produce the same unhelpful `Authentication
+failed: Please make sure your API Key is valid`, so check them in this order.
+
+**Generate it in the region the demo calls.** This is the most common cause,
+and it has bitten this repo. A key is minted for whatever region the console
+was showing, so a key made in us-west-2 fails every call to us-east-1 with the
+message above and no hint that the region is why. If you are not sure which
+region a key belongs to, sweep for it with the key still exported. The check
+prints the auth path it used on every run, so if those lines say SigV4 rather
+than Bedrock API key, the key is not in the environment and the sweep is
+testing your credentials instead:
+
+```bash
+for r in us-east-1 us-east-2 us-west-2; do
+  echo "== $r"; BEDROCK_REGION=$r ./scripts/check_bedrock.sh
+done
+```
+
+The region that stops saying `Authentication failed` is the key's home. Either
+regenerate the key in your `BEDROCK_REGION`, or set `BEDROCK_REGION` to the
+region the key came from.
+
+**Prefer a long term key.** Short term keys expire within 12 hours, which is
+fine for a demo you are giving this afternoon and wrong for anything you hand
+to someone else.
+
+**Quote it on export.** These keys are long and can contain characters the
+shell will act on. Unquoted, the value is silently truncated at the first
+space.
+
+**Enable model access for the model you configure.** A valid key on an account
+without model access fails just the same. See the next section.
+
+Each person runs their own key from their own account. One key shared across a
+team bills and rate limits against a single identity, makes CloudWatch unable
+to tell anyone apart, and means revoking one person revokes everybody.
+
+One property worth knowing when this goes wrong: the variable overrides normal
+credentials for Bedrock calls and nothing else. A bad key fails this demo while
+every other AWS command on the machine keeps working, which reads as a broken
+demo rather than a bad credential. `./scripts/check_bedrock.sh` prints which
+auth path it used and separates a mangled key from a rejected one.
+
 ## Bedrock model access
 
 The intended target model for this demo is Claude Haiku 4.5
@@ -147,8 +191,14 @@ model.
 
 That gate is account wide and cannot be lifted from code. It requires
 submitting the Anthropic use case details form in the Bedrock console, under
-Model access, with your organization's details. You can confirm the current
-state with:
+Model access, with your organization's details.
+
+On a fresh account this applies to whichever model you configure, Nova
+included: model access is granted per model, per region, and is separate from
+IAM permissions. Enable it in the console before the first run.
+
+You can confirm the current state with the AWS CLI, which the API key path
+above does not otherwise need:
 
 ```bash
 aws bedrock get-use-case-for-model-access
