@@ -73,6 +73,20 @@ simulated ERP submission whose retries are Temporal's.
 - AWS credentials in the standard chain (environment variables, a profile, SSO,
   or an instance role) with `bedrock:InvokeModel` on the model you configure
 
+The demo never shells out to the AWS CLI. It reads credentials through boto3,
+so the CLI is optional. A Bedrock API key on its own is enough:
+
+```bash
+export AWS_BEARER_TOKEN_BEDROCK=...   # Bedrock console, under API keys
+```
+
+That is the shortest path for a workshop, with no profile and no CLI to set
+up. Two things to know about it. Short term keys expire within 12 hours. And
+the variable overrides normal credentials for Bedrock calls and nothing else,
+so a stale key fails this demo while every other AWS command on the machine
+keeps working. `./scripts/check_bedrock.sh` prints which of the two paths it
+used and names an expired key specifically.
+
 No Temporal background is assumed. The steps below are the whole story.
 
 ## Setup

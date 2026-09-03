@@ -12,6 +12,7 @@ no fallback that hides a failure.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,21 @@ from common.config import get_settings
 
 PROMPT = "Reply with the single word: ok"
 
+BEARER_ENV = "AWS_BEARER_TOKEN_BEDROCK"
+
+
+def _bearer_token_set() -> bool:
+    """Whether a Bedrock API key is present in the environment.
+
+    botocore derives this variable name from the service signing name, so when
+    it is set it authenticates Bedrock calls in place of SigV4 credentials, and
+    it does so for bedrock endpoints only. A stale key therefore fails here
+    while `aws sts get-caller-identity` and every other AWS call keep working,
+    which is an unreadable pair of symptoms unless the check names the auth
+    path it is actually using. The value is never printed.
+    """
+    return bool(os.environ.get(BEARER_ENV))
+
 
 def _fail(message: str, fix: str) -> int:
     print(f"FAIL: {message}", file=sys.stderr)
@@ -46,6 +62,14 @@ def main() -> int:
     settings = get_settings()
     print(f"Region:   {settings.bedrock_region}")
     print(f"Model id: {settings.bedrock_model_id}")
+    print(
+        "Auth:     "
+        + (
+            f"Bedrock API key from {BEARER_ENV}"
+            if _bearer_token_set()
+            else "SigV4 credentials from the standard chain"
+        )
+    )
     print("Invoking Bedrock (live call, no mock)...")
 
     try:
@@ -55,7 +79,8 @@ def main() -> int:
         return _fail(
             f"No usable AWS credentials: {exc}",
             "Run 'aws configure' or export AWS_ACCESS_KEY_ID / "
-            "AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN.",
+            "AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN. A Bedrock API "
+            f"key in {BEARER_ENV} also works on its own.",
         )
     except EndpointConnectionError as exc:
         return _fail(
@@ -103,6 +128,21 @@ def main() -> int:
                 "belongs to the intended account."
             ),
         }
+        # A rejected API key reports as AccessDeniedException, the same code an
+        # IAM problem uses, so the generic fix below would send the reader off
+        # to check policies that are not the cause.
+        if _bearer_token_set() and (
+            code in ("AccessDeniedException", "UnrecognizedClientException")
+            or "API Key" in detail
+        ):
+            return _fail(
+                f"Bedrock rejected the API key ({code}): {detail}",
+                f"{BEARER_ENV} is set and was rejected. Short term Bedrock API "
+                "keys expire within 12 hours. Regenerate it in the Bedrock "
+                f"console, or run 'unset {BEARER_ENV}' to fall back to SigV4 "
+                "credentials. It overrides SigV4 for Bedrock only, so other AWS "
+                "commands keep working while this one fails.",
+            )
         return _fail(
             f"Bedrock rejected the call ({code}): {detail}",
             fixes.get(code, "Inspect the error code above against the Bedrock API docs."),
