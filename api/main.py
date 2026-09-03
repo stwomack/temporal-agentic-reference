@@ -30,7 +30,6 @@ from google.protobuf.json_format import MessageToDict
 from temporalio.client import Client, WorkflowHandle
 from temporalio.service import RPCError, RPCStatusCode
 
-from api.source import SourceLookupError, load_step_source
 from common.config import get_settings
 from common.constants import AGENT_STEPS, DIAGRAM_COLUMNS, STEP_LABELS
 from common.models import (
@@ -355,15 +354,6 @@ async def stream_workflow(workflow_id: str, request: Request) -> StreamingRespon
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@app.get("/api/source/{step}")
-async def step_source(step: str) -> dict[str, Any]:
-    """Story 4.1: the code the given step runs, with the line range to highlight."""
-    try:
-        return load_step_source(step)
-    except SourceLookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/")

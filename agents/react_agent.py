@@ -90,7 +90,11 @@ class AgentSpec:
     tools: Sequence[BaseTool] = field(default_factory=tuple)
     model_timeout: timedelta = timedelta(seconds=120)
     tool_timeout: timedelta = timedelta(seconds=30)
-    max_attempts: int = 3
+    # Bedrock throttling is the most likely transient failure here: three
+    # specialists fan out at once and each may take several turns, so a burst
+    # of concurrent model calls is normal. Five attempts with backoff absorbs
+    # a throttle without failing the workflow in front of an audience.
+    max_attempts: int = 5
 
     @property
     def model_id(self) -> str:
@@ -277,7 +281,8 @@ def assemble_graph(
             "start_to_close_timeout": spec.model_timeout,
             "retry_policy": RetryPolicy(
                 initial_interval=timedelta(seconds=1),
-                maximum_interval=timedelta(seconds=20),
+                backoff_coefficient=2.0,
+                maximum_interval=timedelta(seconds=30),
                 maximum_attempts=spec.max_attempts,
             ),
             "summary": f"{spec.name}: Bedrock turn",

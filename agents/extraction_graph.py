@@ -202,8 +202,11 @@ def build_extraction_graph() -> StateGraph:
             "start_to_close_timeout": timedelta(seconds=120),
             "retry_policy": RetryPolicy(
                 initial_interval=timedelta(seconds=1),
-                maximum_interval=timedelta(seconds=20),
-                maximum_attempts=3,
+                backoff_coefficient=2.0,
+                maximum_interval=timedelta(seconds=30),
+                # Same reasoning as the specialists: absorb a Bedrock throttle
+                # rather than fail the run. See agents/react_agent.py.
+                maximum_attempts=5,
             ),
             "summary": f"Bedrock extraction via {settings.bedrock_model_id}",
         },

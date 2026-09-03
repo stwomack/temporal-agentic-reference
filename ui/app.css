@@ -49,18 +49,13 @@ body {
 .pill.link:hover { border-color: var(--accent); }
 
 main {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-  gap: 16px;
+  display: block;
   padding: 16px 20px 40px;
-  align-items: start;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
-@media (max-width: 1100px) {
-  main { grid-template-columns: minmax(0, 1fr); }
-}
-
-.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.main-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
 .card {
   background: var(--panel);
@@ -185,29 +180,6 @@ table.feed .empty-row td { color: var(--muted); }
 .st.skipped, .st.pending { color: var(--muted); }
 
 .pending { margin-top: 10px; padding: 9px 11px; border-radius: 7px; font-size: 12px; background: rgba(240, 180, 41, 0.10); border: 1px solid rgba(240, 180, 41, 0.4); color: #ffe0a3; }
-
-.code-card { display: flex; flex-direction: column; max-height: calc(100vh - 120px); }
-.code-meta { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-bottom: 8px; }
-pre.code {
-  margin: 0;
-  overflow: auto;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
-  line-height: 1.55;
-  flex: 1 1 auto;
-  min-height: 240px;
-}
-pre.code code { display: block; padding: 8px 0; }
-.ln { display: flex; padding: 0 10px; white-space: pre; }
-.ln .no { color: #4a5261; width: 3.2em; text-align: right; padding-right: 12px; flex: none; user-select: none; }
-.ln .tx { flex: 1 1 auto; }
-.ln.hl { background: rgba(76, 141, 255, 0.14); }
-.ln.hl .no { color: var(--accent); }
-.ln.first-hl { box-shadow: inset 2px 0 0 var(--accent); }
 
 /* ------------------------------------------------ multi-agent diagram */
 

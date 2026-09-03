@@ -28,8 +28,8 @@ all belong to Temporal rather than to any agent framework.
     erp           Simulated submission whose retries are Temporal's.
 
 Every step is recorded in `self._steps`, which the `status` query returns. That
-one query drives the diagram, the telemetry feed, and the code panel in the UI,
-so the UI cannot disagree with the workflow.
+one query drives the diagram, the agent findings, and the telemetry feed in the
+UI, so the UI cannot disagree with the workflow.
 """
 
 from __future__ import annotations

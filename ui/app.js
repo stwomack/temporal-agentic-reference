@@ -4,8 +4,8 @@
 //
 // Everything on screen is derived from one server sent event stream, which in
 // turn is the workflow's own `status` query plus DescribeWorkflowExecution.
-// There is no client side model of the pipeline, so the diagram, the telemetry
-// feed, and the code panel cannot disagree with the workflow.
+// There is no client side model of the pipeline, so the diagram, the agent
+// findings, and the telemetry feed cannot disagree with the workflow.
 
 const el = (id) => document.getElementById(id);
 
@@ -16,8 +16,6 @@ const state = {
   steps: [],
   scenarios: [],
   workflowId: null,
-  source: null,
-  sourceStep: null,
   eventSource: null,
   decisionInFlight: false,
 };
@@ -151,8 +149,6 @@ function resetView() {
     state.eventSource = null;
   }
   state.workflowId = null;
-  state.source = null;
-  state.sourceStep = null;
   el("run-link").hidden = true;
   el("run-label").textContent = "starting";
   el("approval").hidden = true;
@@ -164,8 +160,6 @@ function resetView() {
   el("findings").textContent = "No agent has reported yet.";
   el("feed").tBodies[0].innerHTML =
     '<tr class="empty-row"><td colspan="5">No events yet.</td></tr>';
-  el("code-meta").textContent = "Start a scenario to follow the executing code.";
-  el("code").firstElementChild.textContent = "";
   renderDiagram(null);
 }
 
@@ -214,9 +208,6 @@ function render(payload) {
   renderExtracted(status);
   renderApproval(status);
   renderOutcome(payload, status);
-  if (status) {
-    syncCodePanel(status);
-  }
 }
 
 function renderDiagram(status) {
@@ -546,70 +537,6 @@ async function sendDecision(approved) {
     showError(`The decision was not accepted. ${err.message}`);
   } finally {
     state.decisionInFlight = false;
-  }
-}
-
-// ---------------------------------------------------------------- code panel
-
-function activeStepName(status) {
-  if (status.current_step) {
-    return status.current_step;
-  }
-  // Once the workflow ends, keep the last step that actually ran on screen.
-  const ran = (status.steps || []).filter(
-    (step) => step.status === "completed" || step.status === "failed"
-  );
-  return ran.length > 0 ? ran[ran.length - 1].name : null;
-}
-
-async function syncCodePanel(status) {
-  const step = activeStepName(status);
-  if (!step || step === state.sourceStep) {
-    return;
-  }
-  state.sourceStep = step;
-  try {
-    const source = await getJSON(`/api/source/${encodeURIComponent(step)}`);
-    if (state.sourceStep !== step) {
-      return; // A newer step won the race.
-    }
-    state.source = source;
-    paintCode(source);
-  } catch (err) {
-    el("code-meta").textContent = `Could not load source for ${step}. ${err.message}`;
-  }
-}
-
-function paintCode(source) {
-  el("code-meta").textContent = `${source.file} : ${source.symbol} lines ${source.start_line}-${source.end_line}`;
-  const host = el("code").firstElementChild;
-  host.textContent = "";
-  let firstHighlighted = null;
-
-  source.code.split("\n").forEach((text, index) => {
-    const number = index + 1;
-    const line = document.createElement("div");
-    const highlighted = number >= source.start_line && number <= source.end_line;
-    line.className = highlighted ? "ln hl" : "ln";
-    if (highlighted && firstHighlighted === null) {
-      line.classList.add("first-hl");
-      firstHighlighted = line;
-    }
-    const no = document.createElement("span");
-    no.className = "no";
-    no.textContent = String(number);
-    const tx = document.createElement("span");
-    tx.className = "tx";
-    tx.textContent = text;
-    line.append(no, tx);
-    host.appendChild(line);
-  });
-
-  if (firstHighlighted) {
-    // Put the highlighted block near the top of the panel rather than dead
-    // centre, so the whole function body is usually visible.
-    const pre = el("code");
-    pre.scrollTop = Math.max(0, firstHighlighted.offsetTop - pre.clientHeight * 0.2);
   }
 }
 

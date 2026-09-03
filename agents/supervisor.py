@@ -47,6 +47,17 @@ splits, or a large amount combined with any concern at all.
 - reject: the request cannot proceed on any reading. An unapproved vendor, a \
 vendor absent from the registry, or evidence pointing at fraud.
 
+Each finding carries a severity the specialist assigned: "ok" means it found \
+nothing material, "caution" means it found something a person should see, and \
+"blocker" means it found something disqualifying.
+
+Start from the severities:
+- All three "ok" means auto_approve. Do not look for a reason to escalate a \
+request where every specialist found nothing.
+- Any "blocker" means reject.
+- Otherwise weigh the "caution" findings and choose between escalate_to_human \
+and auto_approve.
+
 Guidance:
 - Weigh the specialists, do not just count them. One critical vendor risk \
 outweighs two clean reports.
@@ -128,6 +139,7 @@ def task(extracted: dict[str, Any], findings: Sequence[AgentFinding]) -> str:
                 [
                     {
                         "agent": finding.agent,
+                        "severity": finding.severity.value,
                         "headline": finding.headline,
                         "rationale": finding.detail,
                         "details": finding.raw,

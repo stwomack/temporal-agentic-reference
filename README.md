@@ -60,7 +60,9 @@ simulated ERP submission whose retries are Temporal's.
   request twice, once normally and once with a `SIGKILL`, and comparing the
   activity execution counts.
 - **Every agent turn is independently retried.** A model call that throttles
-  retries on its own policy without disturbing the other agents.
+  retries on its own policy, with backoff, without disturbing the other
+  agents. Three specialists firing at once makes Bedrock throttling routine
+  rather than exceptional, and it is absorbed instead of failing the run.
 - **Agents and rules are layered, not mixed.** The escalation scenario is under
   the spending threshold, so the rule passes it, and the agents stop it anyway.
 
@@ -250,39 +252,22 @@ What to watch, in order:
 - **The extracted purchase order** panel shows the fields the model pulled out,
   along with the model id and the token counts for that specific call. Those
   counts are the proof the call was live.
-- **The approval panel** appears only in the two human in the loop scenarios.
-  Approve or Reject sends a Temporal Update. If you try to send a decision when
-  the workflow is not waiting, the API returns the workflow's own reason rather
-  than a generic error.
+- **The approval panel** appears whenever a human is needed, which is the two
+  human in the loop scenarios plus agent judgment escalation and duplicate
+  catch. It states why, which may be the supervisor's reasoning rather than a
+  threshold. Approve or Reject sends a Temporal Update. If you try to send a
+  decision when the workflow is not waiting, the API returns the workflow's own
+  reason rather than a generic error.
 - **The retry banner** appears in the failure and retry scenario, showing which
   attempt Temporal is on and the message from the last failure.
 - **The telemetry table** lists every step with status, latency, and timestamp.
   Skipped steps say why they were skipped.
-- **The code panel** on the right follows along. See below.
 
 Click "view in Temporal" next to the run id to open the same execution in the
 Temporal Web UI. In the failure and retry scenario, while it is running, the
 Pending Activities section there shows the live attempt count and the last
 failure. After it completes, the `ActivityTaskStarted` event for the ERP step
 records `attempt: 3` along with the failure that preceded it.
-
-## The code panel (story 4.1)
-
-Story 4.1 was built. The right hand panel shows the source file and function
-that implements the currently executing step, with the function body
-highlighted and scrolled into view, and it follows the workflow from step to
-step with no manual refresh.
-
-For the four specialist agents the panel shows the agent's system prompt, not
-its plumbing, because the prompt is what actually distinguishes one agent from
-another. For the deterministic steps it shows the function.
-
-The line numbers are not hardcoded. The API parses the module with Python's
-`ast` at request time and finds the symbol by name, resolving a function, a
-class, or a module level constant, so the panel keeps pointing at the right
-code after the files are edited. A test asserts that every step in the diagram
-still resolves to a real symbol, which is what would otherwise break silently
-after a rename.
 
 ## The durability demo
 
@@ -436,9 +421,9 @@ uv run pytest
 
 The suite covers the guardrail policy boundaries, the ERP activity's behavior
 at each Temporal attempt number, the agent tools, every agent's finding
-mapping, the loop safeguards that force an agent to conclude, the code panel's
-source resolution, live Bedrock extraction and live agent tool loops, and the
-scenarios end to end against a real Temporal server.
+mapping, the loop safeguards that force an agent to conclude, live Bedrock
+extraction and live agent tool loops, and the scenarios end to end against a
+real Temporal server.
 
 Three of those e2e tests assert the claims this demo makes out loud rather than
 taking them on trust: that the fan out finishes in well under the combined time
@@ -454,8 +439,8 @@ passing test suite that stubbed it out would be worse than a skipped one.
 
 - The workflow's `status` query is the single source of truth for the UI. The
   API holds no state, the browser holds no model of the pipeline, and so the
-  diagram, the telemetry feed, and the code panel cannot drift from what the
-  workflow actually did.
+  diagram, the agent findings, and the telemetry feed cannot drift from what
+  the workflow actually did.
 - The agents are the probabilistic components and are kept separable from the
   rules. The deterministic guardrail runs last and outranks the supervisor, so
   every hard block stays auditable and gives the same answer every time.
