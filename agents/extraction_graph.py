@@ -199,7 +199,9 @@ def build_extraction_graph() -> StateGraph:
         extract_po,
         metadata={
             "execute_in": "activity",
-            "start_to_close_timeout": timedelta(seconds=120),
+            "start_to_close_timeout": timedelta(
+                seconds=settings.agent_activity_timeout_seconds
+            ),
             "retry_policy": RetryPolicy(
                 initial_interval=timedelta(seconds=1),
                 backoff_coefficient=2.0,

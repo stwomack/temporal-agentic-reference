@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     bedrock_max_tokens: int = 2048
     bedrock_temperature: float = 0.0
 
+    # start_to_close_timeout for an agent's model turn. This is also how long
+    # Temporal takes to notice a worker died mid call: a non heartbeating
+    # activity cannot be rescheduled until its timeout expires, so a crash
+    # landing inside a model turn stalls the workflow for this long. Observed
+    # turns run 1.5 to 6 seconds, so the default is generous. Lower it to
+    # around 20 when you intend to demo a worker crash by hand.
+    agent_activity_timeout_seconds: int = 60
+
     # Per agent model overrides. Each falls back to bedrock_model_id when
     # unset, so the demo runs on one model by default but can put a cheaper
     # model on the mechanical agents and a stronger one on the supervisor.

@@ -22,11 +22,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import collections
+import os
 import signal
 import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -50,13 +52,22 @@ BAR = "=" * 78
 
 
 
-async def existing_pollers(client, settings) -> list[str]:
-    """Identities of workers already polling this task queue.
+# A live worker long-polls, so its last access time is never far in the past.
+# Temporal keeps a poller entry for several minutes after the worker behind it
+# dies, though, so presence alone is not evidence of a live worker: entries
+# have been observed 269 seconds stale with no process left running. Anything
+# not seen inside this window is treated as gone.
+LIVE_POLLER_WINDOW_SECONDS = 75
 
-    Temporal keeps a poller listed for roughly a minute after the worker stops,
-    so a recently killed worker can still show up here.
+
+async def existing_pollers(client, settings) -> list[tuple[str, float]]:
+    """Workers currently polling this task queue, as (identity, seconds stale).
+
+    Only pollers seen within LIVE_POLLER_WINDOW_SECONDS are returned; older
+    entries belong to workers that have already exited.
     """
-    identities: set[str] = set()
+    now = datetime.now(timezone.utc)
+    freshest: dict[str, float] = {}
     for queue_type in (
         temporal_enums.TaskQueueType.TASK_QUEUE_TYPE_WORKFLOW,
         temporal_enums.TaskQueueType.TASK_QUEUE_TYPE_ACTIVITY,
@@ -68,15 +79,35 @@ async def existing_pollers(client, settings) -> list[str]:
                 task_queue_type=queue_type,
             )
         )
-        identities.update(poller.identity for poller in response.pollers)
-    return sorted(identities)
+        for poller in response.pollers:
+            last_seen = poller.last_access_time.ToDatetime().replace(tzinfo=timezone.utc)
+            age = (now - last_seen).total_seconds()
+            # Keep the most recent sighting of each identity.
+            if poller.identity not in freshest or age < freshest[poller.identity]:
+                freshest[poller.identity] = age
+
+    return sorted(
+        (identity, age)
+        for identity, age in freshest.items()
+        if age <= LIVE_POLLER_WINDOW_SECONDS
+    )
+
+
+# A non heartbeating activity cannot be rescheduled until its
+# start_to_close_timeout expires, so if the kill lands inside a model turn the
+# workflow stalls for exactly that long. The default 60s is right for normal
+# running and far too long to watch. The workers this script spawns get a short
+# one so the recovery is quick and legible.
+CRASH_DEMO_AGENT_TIMEOUT = "15"
 
 
 def start_worker() -> subprocess.Popen:
     print("starting a worker...")
+    env = {**os.environ, "AGENT_ACTIVITY_TIMEOUT_SECONDS": CRASH_DEMO_AGENT_TIMEOUT}
     return subprocess.Popen(
         [sys.executable, "worker.py"],
         cwd=REPO_ROOT,
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -155,8 +186,8 @@ async def main() -> int:
             f"REFUSING TO RUN: {len(others)} worker(s) are already polling "
             f"'{settings.temporal_task_queue}':"
         )
-        for identity in others:
-            print(f"  {identity}")
+        for identity, age in others:
+            print(f"  {identity}  (last polled {age:.0f}s ago)")
         print(
             "\nThis demo kills its own worker to show that finished agent work "
             "survives.\nAnother worker would pick the work up instantly, the fan "
@@ -164,9 +195,10 @@ async def main() -> int:
             "print 'same' for everything\nwhile proving nothing.\n"
             "\nStop them first:\n"
             "  ./scripts/cleanup.sh --all\n"
-            "\nTemporal lists a poller for about a minute after its worker stops, "
-            "so if you\njust stopped one, wait a moment and try again. Use --force "
-            "to run anyway."
+            f"\nOnly pollers seen in the last {LIVE_POLLER_WINDOW_SECONDS}s count "
+            "as live. Temporal keeps an entry for\nseveral minutes after a worker "
+            "exits, so if you just stopped one, wait for it to\nage out. Use "
+            "--force to run anyway."
         )
         return 2
 
@@ -202,7 +234,12 @@ async def main() -> int:
     print("worker is gone. The workflow is untouched on the server.\n")
     worker = start_worker()
     await asyncio.sleep(8)
-    print("worker is back. Temporal is replaying the workflow.\n")
+    print(
+        "worker is back. Temporal is replaying the workflow.\n"
+        f"If the kill landed inside a model turn, Temporal waits out that "
+        f"activity's {CRASH_DEMO_AGENT_TIMEOUT}s timeout before rescheduling "
+        f"it, since a dead worker cannot report anything.\n"
+    )
 
     result = await handle.result()
     crashed = await activity_counts(handle)

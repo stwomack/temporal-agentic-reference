@@ -88,7 +88,7 @@ class AgentSpec:
     system_prompt: str
     finding_schema: type[BaseModel]
     tools: Sequence[BaseTool] = field(default_factory=tuple)
-    model_timeout: timedelta = timedelta(seconds=120)
+    model_timeout: timedelta | None = None
     tool_timeout: timedelta = timedelta(seconds=30)
     # Bedrock throttling is the most likely transient failure here: three
     # specialists fan out at once and each may take several turns, so a burst
@@ -99,6 +99,12 @@ class AgentSpec:
     @property
     def model_id(self) -> str:
         return get_settings().model_for(self.name)
+
+    @property
+    def resolved_model_timeout(self) -> timedelta:
+        if self.model_timeout is not None:
+            return self.model_timeout
+        return timedelta(seconds=get_settings().agent_activity_timeout_seconds)
 
     @property
     def tools_by_name(self) -> dict[str, BaseTool]:
@@ -278,7 +284,7 @@ def assemble_graph(
         call_model,
         metadata={
             "execute_in": "activity",
-            "start_to_close_timeout": spec.model_timeout,
+            "start_to_close_timeout": spec.resolved_model_timeout,
             "retry_policy": RetryPolicy(
                 initial_interval=timedelta(seconds=1),
                 backoff_coefficient=2.0,

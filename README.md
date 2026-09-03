@@ -285,8 +285,12 @@ queue would pick the work up the instant the first one dies, so the fan out
 would never actually be interrupted and the comparison at the end would print
 "same" for everything while proving nothing. The script checks for other
 pollers and refuses to run rather than hand you that misleading result. Pass
-`--force` to override, and note that Temporal lists a poller for about a minute
-after its worker stops, so wait a moment if you just stopped one.
+`--force` to override.
+
+It judges a poller live by its last access time, not by its presence, because
+Temporal keeps an entry for minutes after the worker behind it exits. Entries
+have been observed 269 seconds stale with no process left running, so presence
+alone would refuse to run long after the queue was actually clear.
 
 It runs the same request twice. The first pass is a normal run and becomes the
 baseline. The second pass waits until the fan out is genuinely partial, with at
@@ -309,6 +313,44 @@ activity body ran. Matching counts mean nothing was recomputed:
 Any agent that was mid-call when the process died may show one extra execution.
 That is the honest and expected result: Temporal retried the work that was
 genuinely in flight and nothing else.
+
+### Doing it by hand instead
+
+The script only automates the timing and the arithmetic. Killing the worker
+yourself proves the same thing, and is more convincing in front of a room. Run
+a scenario, and while the three specialists are lit up in the diagram:
+
+```bash
+pkill -9 -f "python worker.py"     # then restart it
+./scripts/worker.sh
+```
+
+Two things are worth knowing before you try it live.
+
+**Use `kill -9`, not Ctrl+C.** Ctrl+C is a graceful shutdown: the worker takes
+about four seconds to drain, reports its in-flight activities as failed on the
+way out, and Temporal reschedules them immediately. The workflow resumed 14
+seconds after the interrupt in testing. That still shows finished agent work
+surviving, but it is a clean shutdown, and a skeptic in the room can fairly say
+you asked the process to stop. `kill -9` is the real thing: the process is gone
+with nothing reported.
+
+**Lower the agent timeout first, or you will stand in silence.** A crashed
+worker reports nothing, so Temporal cannot know an in-flight activity is
+orphaned until that activity's `start_to_close_timeout` expires. With the
+default of 60 seconds, a kill landing inside a model turn stalls the workflow
+for about that long. At the old 120 second timeout it measured 130.8 seconds of
+dead air. Set it low before demoing:
+
+```bash
+AGENT_ACTIVITY_TIMEOUT_SECONDS=15 ./scripts/worker.sh
+```
+
+The same kill then recovered in 24.5 seconds. `scripts/crash_demo.sh` already
+sets this for the workers it spawns, which is why it does not need the warning.
+
+Model turns run one and a half to six seconds in practice, so 15 leaves ample
+headroom. The default is 60 because a demo timeout is not a production one.
 
 ## Driving it from the command line instead
 
