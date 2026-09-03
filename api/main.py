@@ -20,6 +20,7 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
@@ -51,6 +52,10 @@ UI_DIR = REPO_ROOT / "ui"
 # How often the SSE endpoint re-reads the workflow query. This is the UI's
 # refresh loop, not the human approval mechanism, which is an Update.
 POLL_INTERVAL_SECONDS = 0.4
+
+# How long to wait for a worker to answer the status query before treating it
+# as unreachable. Queries normally return in milliseconds.
+QUERY_TIMEOUT = timedelta(seconds=3)
 
 _client: Optional[Client] = None
 
@@ -173,15 +178,19 @@ async def _read_status(workflow_id: str) -> StatusResponse:
     status: Optional[POWorkflowStatus] = None
     query_error = ""
     try:
-        status = await wf.query(POApprovalWorkflow.status)
+        # Bounded on purpose. A query is answered by a worker, so when the
+        # worker is gone this call otherwise sits on the default RPC deadline
+        # and the event stream simply stalls, leaving the UI frozen with no
+        # explanation. A short deadline turns that into a prompt, explicit
+        # "no worker is answering" that the UI can show.
+        status = await wf.query(
+            POApprovalWorkflow.status, rpc_timeout=QUERY_TIMEOUT
+        )
     except Exception as exc:  # noqa: BLE001
         # A completed workflow can still be queried, so a failure here is real
         # and worth showing rather than hiding behind an empty panel.
         query_error = f"{type(exc).__name__}: {exc}"
         logger.warning("status query failed for %s: %s", workflow_id, query_error)
-
-    if status is not None and query_error:
-        status.error = query_error
 
     return StatusResponse(
         workflow_id=workflow_id,
@@ -190,6 +199,7 @@ async def _read_status(workflow_id: str) -> StatusResponse:
         execution_status=description.status.name if description.status else "UNKNOWN",
         pending_activities=pending,
         status=status,
+        status_error=query_error,
     )
 
 

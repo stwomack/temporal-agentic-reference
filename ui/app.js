@@ -18,6 +18,7 @@ const state = {
   workflowId: null,
   eventSource: null,
   decisionInFlight: false,
+  workerWasUnreachable: false,
 };
 
 const TERMINAL_STATES = {
@@ -201,6 +202,27 @@ function subscribe(workflowId) {
 
 function render(payload) {
   const status = payload.status;
+
+  // A query needs a live worker to answer it, so the moment the worker dies
+  // the status goes missing. Re-rendering from a null status would reset every
+  // step to pending and empty the findings, which looks exactly like the work
+  // was lost. It was not: it is on the server. Hold the last known view and
+  // say what is happening instead.
+  if (!status) {
+    state.workerWasUnreachable = true;
+    showError(
+      "No worker is answering. Showing the last known state. The workflow " +
+        "and everything the agents have already finished are safe on the " +
+        "Temporal server, and will resume when a worker comes back." +
+        (payload.status_error ? ` (${payload.status_error})` : "")
+    );
+    return;
+  }
+  if (state.workerWasUnreachable) {
+    showError(null);
+    state.workerWasUnreachable = false;
+  }
+
   renderDiagram(status);
   renderFindings(status);
   renderFeed(status);

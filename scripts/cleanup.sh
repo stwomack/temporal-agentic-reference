@@ -5,6 +5,14 @@
 #   ./scripts/cleanup.sh --all        stop every one, including ones you started
 #                                     in a terminal
 #   ./scripts/cleanup.sh --dry-run    list what would be stopped, kill nothing
+#   ./scripts/cleanup.sh --worker     only the worker, leave the API running
+#   ./scripts/cleanup.sh --api        only the API, leave the worker running
+#   ./scripts/cleanup.sh --kill       SIGKILL immediately, no graceful SIGTERM
+#
+# To simulate a worker crash for the durability demo, killing the worker but
+# leaving the UI up to watch:
+#
+#   ./scripts/cleanup.sh --all --worker --kill
 #
 # "Orphaned" means reparented to PID 1 with no controlling terminal, which is
 # what a process started detached in the background looks like once its shell
@@ -24,10 +32,16 @@ cd "$repo_root"
 
 all=false
 dry_run=false
+hard_kill=false
+want_worker=true
+want_api=true
 for arg in "$@"; do
   case "$arg" in
     --all) all=true ;;
     --dry-run|-n) dry_run=true ;;
+    --kill) hard_kill=true ;;
+    --worker) want_api=false ;;
+    --api) want_worker=false ;;
     -h|--help)
       # Print the comment header, stopping at the first line of real code, so
       # this stays correct as the header grows or shrinks.
@@ -40,7 +54,9 @@ done
 
 # Command line fragments identifying our two long running processes. Note that
 # "temporal server" matches neither, and is filtered again below for safety.
-PATTERNS=('worker\.py' 'api\.main:app')
+PATTERNS=()
+[ "$want_worker" = true ] && PATTERNS+=('worker\.py')
+[ "$want_api" = true ] && PATTERNS+=('api\.main:app')
 
 # PIDs to never kill: this script, its shell, and their ancestors.
 protected=""
@@ -120,10 +136,14 @@ if [ "$dry_run" = true ]; then
 fi
 
 # Ask nicely, then insist. Children first so a supervisor does not respawn them.
+# With --kill, skip asking: a graceful shutdown drains in-flight activities and
+# reports them to the server, which is a clean stop rather than a crash.
 # shellcheck disable=SC2086
 reversed="$(echo $targets | tr ' ' '\n' | sort -u -rn)"
+first_signal="TERM"
+[ "$hard_kill" = true ] && first_signal="KILL"
 for target in $reversed; do
-  kill -TERM "$target" 2>/dev/null
+  kill -"$first_signal" "$target" 2>/dev/null
 done
 
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -154,4 +174,9 @@ if [ -n "${remaining// /}" ]; then
   exit 1
 fi
 
-echo "Stopped. The Temporal server, if you are running one, was not touched."
+if [ "$hard_kill" = true ]; then
+  echo "Killed with SIGKILL. Nothing was reported to the server, so Temporal"
+  echo "will wait out each in-flight activity's timeout before rescheduling it."
+else
+  echo "Stopped. The Temporal server, if you are running one, was not touched."
+fi

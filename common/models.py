@@ -203,3 +203,7 @@ class StatusResponse(BaseModel):
     execution_status: str
     pending_activities: list[dict[str, Any]] = Field(default_factory=list)
     status: Optional[POWorkflowStatus] = None
+    # Why `status` is absent, when it is. A query needs a live worker to answer
+    # it, so this is populated when the worker is down, which is exactly the
+    # moment the durability demo cares about.
+    status_error: str = ""

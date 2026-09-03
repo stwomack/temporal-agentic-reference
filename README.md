@@ -317,40 +317,75 @@ genuinely in flight and nothing else.
 ### Doing it by hand instead
 
 The script only automates the timing and the arithmetic. Killing the worker
-yourself proves the same thing, and is more convincing in front of a room. Run
-a scenario, and while the three specialists are lit up in the diagram:
+yourself proves the same thing and is more visceral in front of a room, at the
+cost of having to make the point yourself afterwards.
+
+**Set the agent timeout low before you start, or you will stand in silence.** A
+crashed worker reports nothing, so Temporal cannot know an in-flight activity is
+orphaned until that activity's `start_to_close_timeout` expires. At the default
+of 60 seconds a kill landing inside a model turn stalls the workflow for about
+that long, and at the old 120 second default it measured 130.8 seconds of dead
+air. `scripts/crash_demo.sh` sets this itself, which is why it carries no such
+warning.
+
+The whole sequence, in three terminals:
 
 ```bash
-pkill -9 -f "python worker.py"     # then restart it
-./scripts/worker.sh
+# 1. worker, with a short agent timeout so the recovery is quick
+AGENT_ACTIVITY_TIMEOUT_SECONDS=15 ./scripts/worker.sh
+
+# 2. API and UI
+./scripts/api.sh
+
+# 3. nothing yet, this is where you will kill the worker
 ```
 
-Two things are worth knowing before you try it live.
+Open http://127.0.0.1:8000 and start any scenario. The moment the three
+specialists light up inside the dashed "concurrent" box, in the third terminal:
 
-**Use `kill -9`, not Ctrl+C.** Ctrl+C is a graceful shutdown: the worker takes
-about four seconds to drain, reports its in-flight activities as failed on the
-way out, and Temporal reschedules them immediately. The workflow resumed 14
-seconds after the interrupt in testing. That still shows finished agent work
-surviving, but it is a clean shutdown, and a skeptic in the room can fairly say
-you asked the process to stop. `kill -9` is the real thing: the process is gone
-with nothing reported.
+```bash
+./scripts/cleanup.sh --all --worker --kill
+```
 
-**Lower the agent timeout first, or you will stand in silence.** A crashed
-worker reports nothing, so Temporal cannot know an in-flight activity is
-orphaned until that activity's `start_to_close_timeout` expires. With the
-default of 60 seconds, a kill landing inside a model turn stalls the workflow
-for about that long. At the old 120 second timeout it measured 130.8 seconds of
-dead air. Set it low before demoing:
+That sends `SIGKILL` to the worker and leaves the API and UI running so you can
+watch. Do not reach for `pkill -f "python worker.py"`: under `uv` the process
+shows up as `.../MacOS/Python worker.py` with a capital P, so that pattern
+matches nothing and exits quietly having done nothing at all.
+
+The UI freezes and shows: "No worker is answering. Showing the last known
+state. The workflow and everything the agents have already finished are safe on
+the Temporal server, and will resume when a worker comes back." The finished
+agents keep their findings, their latencies, and their token counts, because
+that state lives in workflow history on the server rather than in the process
+you just destroyed. Then bring the worker back:
 
 ```bash
 AGENT_ACTIVITY_TIMEOUT_SECONDS=15 ./scripts/worker.sh
 ```
 
-The same kill then recovered in 24.5 seconds. `scripts/crash_demo.sh` already
-sets this for the workers it spawns, which is why it does not need the warning.
+Within about 25 seconds the workflow picks up where it left off and runs to
+completion. The specialists that had already reported are not re-run, and their
+latencies and token counts in the telemetry table are the original ones, not
+new numbers from a second call.
 
-Model turns run one and a half to six seconds in practice, so 15 leaves ample
-headroom. The default is 60 because a demo timeout is not a production one.
+Two caveats.
+
+**Use `kill -9`, not Ctrl+C.** Ctrl+C is a graceful shutdown: the worker takes
+about four seconds to drain, reports its in-flight activities as failed on the
+way out, and Temporal reschedules them immediately, so the workflow resumed in
+14 seconds in testing. That still shows finished agent work surviving, but it
+is a clean shutdown, and a skeptic can fairly say you asked the process to
+stop. `kill -9` is the real thing: the process is gone with nothing reported.
+
+**`cleanup.sh` is scoped to this checkout**, so a `worker.py` belonging to
+another project on the same machine is never a target. `--worker` leaves the
+API alone, and `--kill` skips the graceful `SIGTERM` that the script otherwise
+sends. Without `--all` it would also skip the worker you started in a terminal,
+since that one has a tty.
+
+Model turns run one and a half to six seconds in practice, so an agent timeout
+of 15 leaves ample headroom. The default is 60 because a demo timeout is not a
+production one.
 
 ## Driving it from the command line instead
 
@@ -386,7 +421,7 @@ its arguments through, and `exec`s the real command so exit codes propagate.
 | `scripts/api.sh` | `uv run uvicorn api.main:app --reload`, with the host and port from `API_HOST` and `API_PORT` |
 | `scripts/run_scenario.sh` | `uv run python scripts/run_scenario.py` |
 | `scripts/crash_demo.sh` | `uv run python -u scripts/crash_demo.py`, the durability demo |
-| `scripts/cleanup.sh` | stops this repo's worker and API processes, see below |
+| `scripts/cleanup.sh` | stops this repo's worker and API processes, and can `SIGKILL` just the worker for the crash demo |
 
 ## Stopping things
 
@@ -398,6 +433,8 @@ showing up as `[Errno 48] Address already in use` on the next start.
 ./scripts/cleanup.sh              # stop orphaned worker and API processes
 ./scripts/cleanup.sh --dry-run    # list what it would stop, kill nothing
 ./scripts/cleanup.sh --all        # also stop ones you started in a terminal
+./scripts/cleanup.sh --worker     # only the worker, leave the API running
+./scripts/cleanup.sh --kill       # SIGKILL, no graceful SIGTERM first
 ```
 
 By default it only stops orphans: processes reparented to PID 1 with no
